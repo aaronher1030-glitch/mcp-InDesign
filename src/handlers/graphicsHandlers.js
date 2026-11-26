@@ -448,6 +448,7 @@ export class GraphicsHandlers {
      */
     static async applyObjectStyle(args) {
         const {
+            pageIndex = 0,
             styleName,
             itemType = 'rectangle',
             itemIndex = 0
@@ -458,7 +459,11 @@ export class GraphicsHandlers {
                 return { success: false, error: 'No document open' };
             }
             const doc = app.activeDocument;
-            const page = doc.pages.item(0);
+            const pageIndex = ${JSON.stringify(pageIndex)};
+            if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= doc.pages.length) {
+                return { success: false, error: 'Page index out of range' };
+            }
+            const page = doc.pages.item(pageIndex);
 
             try {
                 const objectStyle = doc.objectStyles.itemByName(${JSON.stringify(styleName)});
@@ -470,6 +475,7 @@ export class GraphicsHandlers {
                 const type = ${JSON.stringify(itemType)};
                 const idx = ${itemIndex};
 
+                if (!Number.isInteger(idx) || idx < 0) return { success: false, error: 'Item index out of range' };
                 if (type === 'rectangle') {
                     if (idx >= page.rectangles.length) return { success: false, error: 'Rectangle index out of range' };
                     item = page.rectangles.item(idx);

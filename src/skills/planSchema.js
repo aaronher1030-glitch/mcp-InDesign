@@ -37,25 +37,11 @@ const TEN_MINUTES_MS = 10 * 60 * 1000;
 const FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/;
 const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
-// apply_character_style is dispatched by the server but is absent from its
-// published tool-definition catalog. Keep the plan contract aligned with the
-// handler's actual arguments until that catalog is corrected.
-const APPLY_CHARACTER_STYLE_SCHEMA = {
-  type: 'object',
-  properties: {
-    styleName: { type: 'string' },
-    frameIndex: { type: 'integer' },
-    startIndex: { type: 'integer' },
-    endIndex: { type: 'integer' },
-  },
-  required: ['styleName'],
-  additionalProperties: false,
-};
-
 const TOOL_SCHEMAS = new Map(
   allToolDefinitions.map((definition) => [definition.name, definition.inputSchema]),
 );
-TOOL_SCHEMAS.set('apply_character_style', APPLY_CHARACTER_STYLE_SCHEMA);
+const IDENTITY_KEYS = ['pageIndex', 'itemIndex', 'frameIndex', 'objectIndex'];
+const TARGET_SELECTORS = ['targetIndex', 'targetId', 'targetFingerprint'];
 
 function isRecord(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -135,27 +121,50 @@ export function targetFingerprint(target) {
   return hash(snapshot);
 }
 
-function validStepRisk(step) {
-  return isRecord(step)
-    && LOW_RISK_TOOLS.has(step.toolName)
-    && isRecord(step.arguments)
-    && step.reversible === true;
+function isIndex(value) {
+  return Number.isInteger(value) && value >= 0;
+}
+
+function validStepRisk(step, target) {
+  if (!isRecord(step) || !isRecord(target) || !LOW_RISK_TOOLS.has(step.toolName)
+      || !isRecord(step.arguments) || step.reversible !== true
+      || step.targetFingerprint !== target.fingerprint) return false;
+  const schema = TOOL_SCHEMAS.get(step.toolName);
+  if (!schema || validateArguments(step.arguments, step.toolName, 'step.arguments', []).length > 0) return false;
+  return identityConflicts(step.arguments, target, schema).length === 0;
 }
 
 export function classifyPlanRisk(plan) {
   if (!isRecord(plan) || typeof plan.skillId !== 'string' || !plan.skillId.trim()
-      || plan.skillId === 'multi-page-consistency') return 'high';
-  if (!Array.isArray(plan.targets) || plan.targets.length === 0 || plan.targets.length > 5) return 'high';
-  if (!plan.targets.every(isRecord)) return 'high';
-  if (!Array.isArray(plan.affectedPages) || plan.affectedPages.length !== 1) return 'high';
-  if (!Number.isInteger(plan.affectedPages[0]) || plan.affectedPages[0] < 0) return 'high';
-  if (plan.targets.some((target) => target.pageIndex !== undefined && target.pageIndex !== plan.affectedPages[0])) {
+      || plan.skillId !== plan.skillId.trim() || plan.skillId === 'multi-page-consistency'
+      || typeof plan.documentFingerprint !== 'string' || !FINGERPRINT_PATTERN.test(plan.documentFingerprint)) {
     return 'high';
   }
+  if (!Array.isArray(plan.targets) || plan.targets.length === 0 || plan.targets.length > 5) return 'high';
+  const targetErrors = [];
+  plan.targets.forEach((target, index) => validateTarget(target, index, targetErrors));
+  if (targetErrors.length > 0) return 'high';
+  const ids = new Set(plan.targets.map((target) => target.id));
+  const fingerprints = new Set(plan.targets.map((target) => target.fingerprint));
+  if (ids.size !== plan.targets.length || fingerprints.size !== plan.targets.length) return 'high';
+  if (!Array.isArray(plan.affectedPages) || plan.affectedPages.length !== 1
+      || !isIndex(plan.affectedPages[0])
+      || plan.targets.some((target) => target.pageIndex !== plan.affectedPages[0])) return 'high';
   if (!Array.isArray(plan.steps) || plan.steps.length === 0) return 'high';
-  if (plan.steps.some((step) => Number.isInteger(step.arguments?.pageIndex)
-      && step.arguments.pageIndex !== plan.affectedPages[0])) return 'high';
-  if (!plan.steps.every(validStepRisk)) return 'high';
+  const stepIds = new Set();
+  for (const step of plan.steps) {
+    if (!isRecord(step) || typeof step.id !== 'string' || !step.id.trim()) return 'high';
+    if (stepIds.has(step.id) || step.risk !== 'low' || !isRecord(step.expectedResult)
+        || typeof step.toolName !== 'string' || step.toolName !== step.toolName.trim()) return 'high';
+    stepIds.add(step.id);
+    const matches = plan.targets.filter((target) => target.fingerprint === step.targetFingerprint);
+    if (matches.length !== 1 || !validStepRisk(step, matches[0])) return 'high';
+    try {
+      if (findTarget(step, plan.targets) !== matches[0]) return 'high';
+    } catch {
+      return 'high';
+    }
+  }
   return 'low';
 }
 
@@ -172,42 +181,75 @@ function targetIdentity(target) {
   };
 }
 
+function identityConflicts(args, target, schema) {
+  if (!isRecord(args) || !isRecord(target)) return [];
+  const properties = schema?.properties ?? {};
+  const identity = targetIdentity(target);
+  return IDENTITY_KEYS.filter((key) => Object.hasOwn(properties, key)
+    && args[key] !== undefined
+    && (!isIndex(args[key]) || !isIndex(identity[key]) || args[key] !== identity[key]));
+}
+
 function findTarget(step, targets) {
-  if (Number.isInteger(step.targetIndex) && step.targetIndex >= 0 && step.targetIndex < targets.length) {
-    return targets[step.targetIndex];
+  const args = isRecord(step.arguments) ? step.arguments : {};
+  const schema = TOOL_SCHEMAS.get(step.toolName);
+  const properties = schema?.properties ?? {};
+  const suppliedIdentity = IDENTITY_KEYS.filter((key) => Object.hasOwn(properties, key)
+    && args[key] !== undefined);
+  const resolutions = [];
+  let hasExplicitSelector = false;
+
+  if (step.targetIndex !== undefined) {
+    hasExplicitSelector = true;
+    resolutions.push(isIndex(step.targetIndex) && step.targetIndex < targets.length
+      ? targets[step.targetIndex] : undefined);
   }
-  if (typeof step.targetId === 'string') {
-    const byId = targets.find((target) => target.id === step.targetId);
-    if (byId) return byId;
+  if (step.targetId !== undefined) {
+    hasExplicitSelector = true;
+    const matches = typeof step.targetId === 'string'
+      ? targets.filter((target) => target.id === step.targetId) : [];
+    resolutions.push(matches.length === 1 ? matches[0] : undefined);
   }
-  if (typeof step.targetFingerprint === 'string') {
-    const byFingerprint = targets.find((target) => target.fingerprint === step.targetFingerprint);
-    if (byFingerprint) return byFingerprint;
+  if (step.targetFingerprint !== undefined) {
+    hasExplicitSelector = true;
+    const matches = typeof step.targetFingerprint === 'string'
+      ? targets.filter((target) => target.fingerprint === step.targetFingerprint) : [];
+    resolutions.push(matches.length === 1 ? matches[0] : undefined);
   }
 
-  const args = isRecord(step.arguments) ? step.arguments : {};
-  const hasIdentity = ['pageIndex', 'itemIndex', 'frameIndex', 'objectIndex']
-    .some((key) => Object.hasOwn(args, key));
-  if (hasIdentity) {
-    const match = targets.find((target) => {
-      const identity = targetIdentity(target);
-      return Object.entries(identity).every(([key, value]) => (
-        !Object.hasOwn(args, key) || value === args[key]
-      ));
-    });
-    if (match) return match;
+  if (hasExplicitSelector) {
+    const resolved = resolutions.filter(Boolean);
+    if (resolved.length !== resolutions.length) return undefined;
+    const selected = resolved[0];
+    if (resolved.some((target) => target !== selected)) {
+      throw new TypeError(`step target selectors ${TARGET_SELECTORS.join('/')} resolve to different targets`);
+    }
+    const conflicts = identityConflicts(args, selected, schema);
+    if (conflicts.length > 0) {
+      const selectors = TARGET_SELECTORS.filter((key) => step[key] !== undefined);
+      throw new TypeError(`step ${selectors.join('/')} conflicts with step.arguments.${conflicts.join('/')}`);
+    }
+    if (suppliedIdentity.length > 0) {
+      const matches = targets.filter((target) => identityConflicts(args, target, schema).length === 0);
+      if (matches.length !== 1 || matches[0] !== selected) return undefined;
+    }
+    return selected;
   }
-  return !hasIdentity && targets.length === 1 ? targets[0] : undefined;
+  if (suppliedIdentity.length > 0) {
+    const matches = targets.filter((target) => identityConflicts(args, target, schema).length === 0);
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+  return targets.length === 1 ? targets[0] : undefined;
 }
 
 function inferTargetArguments(toolName, args, target) {
-  if (!isRecord(args) || !target) return args;
-  const result = cloneJson(args, 'step.arguments');
+  const result = args === undefined ? undefined : cloneJson(args, 'step.arguments');
+  if (!isRecord(result) || !target) return result;
   const schema = TOOL_SCHEMAS.get(toolName);
   const properties = schema?.properties ?? {};
   const identity = targetIdentity(target);
-  for (const key of ['pageIndex', 'itemIndex', 'frameIndex', 'objectIndex']) {
-    if (Object.hasOwn(properties, key) && result[key] === undefined && identity[key] !== undefined) {
+  for (const key of IDENTITY_KEYS) {
+    if (Object.hasOwn(properties, key) && result[key] === undefined && isIndex(identity[key])) {
       result[key] = identity[key];
     }
   }
@@ -271,22 +313,24 @@ export function normalizePlanInput(input) {
     const toolName = typeof step.toolName === 'string' ? step.toolName.trim() : step.toolName;
     const target = findTarget({ ...step, toolName }, targets);
     const reversible = LOW_RISK_TOOLS.has(toolName) && step.reversible !== false;
-    return {
+    const normalizedStep = {
       id: normalizeId(step.id, randomUUID),
       toolName,
       arguments: inferTargetArguments(toolName, step.arguments, target),
       targetFingerprint: target?.fingerprint,
       expectedResult: cloneJson(step.expectedResult ?? {}, `plan.steps[${index}].expectedResult`),
       reversible,
-      risk: reversible && isRecord(step.arguments) ? 'low' : 'high',
+      risk: 'high',
     };
+    normalizedStep.risk = validStepRisk(normalizedStep, target) ? 'low' : 'high';
+    return normalizedStep;
   });
 
   const normalized = {
     planId: randomUUID(),
     version: 1,
     ...(inspection.inspectionId !== undefined ? { inspectionId: inspection.inspectionId } : {}),
-    skillId,
+    skillId: skillId.trim(),
     documentFingerprint: fingerprint,
     baseRevision: inspection.baseRevision ?? inspection.document.revision ?? inspection.revision ?? fingerprint,
     units: cloneJson(inspection.units ?? 'pt', 'inspection.units'),
@@ -390,6 +434,7 @@ function validateArguments(args, toolName, path, errors) {
       }
     }
   }
+  return errors;
 }
 
 function validateStringArray(value, path, errors, minimum = 0) {
@@ -409,14 +454,17 @@ function validateTarget(target, index, errors) {
     return;
   }
   if (typeof target.id !== 'string' || !target.id.trim()) errors.push(`${path}.id must be a non-empty string`);
-  if (target.pageIndex !== undefined && (!Number.isInteger(target.pageIndex) || target.pageIndex < 0)) {
-    errors.push(`${path}.pageIndex must be a non-negative integer`);
+  if (!isIndex(target.pageIndex)) errors.push(`${path}.pageIndex must be a non-negative integer`);
+  for (const key of IDENTITY_KEYS.slice(1)) {
+    if (target[key] !== undefined && !isIndex(target[key])) {
+      errors.push(`${path}.${key} must be a non-negative integer`);
+    }
   }
-  if (target.itemIndex !== undefined && (!Number.isInteger(target.itemIndex) || target.itemIndex < 0)) {
-    errors.push(`${path}.itemIndex must be a non-negative integer`);
+  if (target.index !== undefined && !isIndex(target.index)) {
+    errors.push(`${path}.index must be a non-negative integer`);
   }
-  if (target.pageIndex === undefined && typeof target.pageId !== 'string' && typeof target.documentId !== 'string') {
-    errors.push(`${path} must identify a page or document`);
+  if (target.pageId !== undefined && (typeof target.pageId !== 'string' || !target.pageId.trim())) {
+    errors.push(`${path}.pageId must be a non-empty string when provided`);
   }
   if (!isRecord(target.before)) errors.push(`${path}.before must be an object`);
   if (target.before?.geometricBounds !== undefined) {
@@ -436,6 +484,26 @@ function validateTarget(target, index, errors) {
   }
 }
 
+function validateStepBinding(step, path, targets, errors) {
+  const args = isRecord(step.arguments) ? step.arguments : {};
+  const properties = TOOL_SCHEMAS.get(step.toolName)?.properties ?? {};
+  const hasBinding = TARGET_SELECTORS.some((key) => step[key] !== undefined)
+    || IDENTITY_KEYS.some((key) => Object.hasOwn(properties, key) && args[key] !== undefined);
+  if (!hasBinding) return;
+  let target;
+  try {
+    target = findTarget(step, targets);
+  } catch (error) {
+    errors.push(`${path} ${error.message}`);
+    return;
+  }
+  if (!target) {
+    errors.push(`${path} target selectors must resolve to one unambiguous target`);
+  } else if (target.fingerprint !== step.targetFingerprint) {
+    errors.push(`${path}.targetFingerprint conflicts with its target selectors or arguments`);
+  }
+}
+
 export function validatePlan(plan) {
   const errors = [];
   if (!isRecord(plan)) return { valid: false, errors: ['plan must be an object'] };
@@ -444,9 +512,13 @@ export function validatePlan(plan) {
   if (plan.inspectionId !== undefined && (typeof plan.inspectionId !== 'string' || !plan.inspectionId.trim())) {
     errors.push('inspectionId must be a non-empty string when provided');
   }
-  if (typeof plan.skillId !== 'string' || !plan.skillId.trim()) errors.push('skillId must be a non-empty string');
-  if (typeof plan.documentFingerprint !== 'string' || !plan.documentFingerprint.trim()) {
-    errors.push('documentFingerprint is required');
+  if (typeof plan.skillId !== 'string' || !plan.skillId.trim()) {
+    errors.push('skillId must be a non-empty string');
+  } else if (plan.skillId !== plan.skillId.trim()) {
+    errors.push('skillId must be canonical (trimmed)');
+  }
+  if (typeof plan.documentFingerprint !== 'string' || !FINGERPRINT_PATTERN.test(plan.documentFingerprint)) {
+    errors.push('documentFingerprint must be a SHA-256 fingerprint');
   }
   if (!(Number.isInteger(plan.baseRevision) && plan.baseRevision >= 0)
       && !(typeof plan.baseRevision === 'string' && plan.baseRevision.trim())) {
@@ -466,11 +538,16 @@ export function validatePlan(plan) {
   if (Array.isArray(plan.targets)) plan.targets.forEach((target, index) => validateTarget(target, index, errors));
 
   if (!Array.isArray(plan.steps) || plan.steps.length === 0) errors.push('steps must be a non-empty array');
-  const targetFingerprints = new Set(
-    Array.isArray(plan.targets)
-      ? plan.targets.filter(isRecord).map((target) => target.fingerprint).filter(Boolean)
-      : [],
-  );
+  const validTargets = Array.isArray(plan.targets) ? plan.targets.filter(isRecord) : [];
+  const targetFingerprints = new Set(validTargets.map((target) => target.fingerprint).filter(Boolean));
+  if (Array.isArray(plan.targets)) {
+    plan.targets.forEach((target, index) => {
+      if (isRecord(target)
+          && validTargets.filter((candidate) => candidate.fingerprint === target.fingerprint).length > 1) {
+        errors.push(`targets[${index}].fingerprint must be unique`);
+      }
+    });
+  }
   if (Array.isArray(plan.steps)) {
     plan.steps.forEach((step, index) => {
       const path = `steps[${index}]`;
@@ -494,8 +571,11 @@ export function validatePlan(plan) {
       if (!isRecord(step.expectedResult)) errors.push(`${path}.expectedResult must be an object`);
       if (typeof step.reversible !== 'boolean') errors.push(`${path}.reversible must be a boolean`);
       if (!['low', 'high'].includes(step.risk)) errors.push(`${path}.risk must be low or high`);
-      if (validStepRisk(step) && step.risk !== 'low') errors.push(`${path}.risk must be low for a reversible allowlisted step`);
-      if (!validStepRisk(step) && step.risk !== 'high') errors.push(`${path}.risk must be high for this step`);
+      const matchingTargets = validTargets.filter((target) => target.fingerprint === step.targetFingerprint);
+      const target = matchingTargets.length === 1 ? matchingTargets[0] : undefined;
+      if (validStepRisk(step, target) && step.risk !== 'low') errors.push(`${path}.risk must be low for a reversible allowlisted step`);
+      if (!validStepRisk(step, target) && step.risk !== 'high') errors.push(`${path}.risk must be high for this step`);
+      validateStepBinding(step, path, validTargets, errors);
       validateArguments(step.arguments, step.toolName, `${path}.arguments`, errors);
     });
   }

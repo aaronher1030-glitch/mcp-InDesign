@@ -112,13 +112,15 @@ export class StyleHandlers {
      * Apply a paragraph style to text
      */
     static async applyParagraphStyle(args) {
-        const { styleName, frameIndex = 0 } = args;
+        const { pageIndex = 0, styleName, frameIndex = 0 } = args;
 
         const code = `
             if (app.documents.length === 0) return { success: false, error: 'No document open' };
             const doc = app.activeDocument;
-            const page = doc.pages.item(0);
-            if (${frameIndex} >= page.textFrames.length) return { success: false, error: 'Text frame index out of range' };
+            const pageIndex = ${JSON.stringify(pageIndex)};
+            if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= doc.pages.length) return { success: false, error: 'Page index out of range' };
+            const page = doc.pages.item(pageIndex);
+            if (${frameIndex} < 0 || ${frameIndex} >= page.textFrames.length) return { success: false, error: 'Text frame index out of range' };
             const textFrame = page.textFrames.item(${frameIndex});
             const style = doc.paragraphStyles.itemByName(${JSON.stringify(styleName)});
             if (!style.isValid) return { success: false, error: 'Paragraph style not found: ' + ${JSON.stringify(styleName)} };
@@ -136,13 +138,15 @@ export class StyleHandlers {
      * Apply a character style to text
      */
     static async applyCharacterStyle(args) {
-        const { styleName, frameIndex = 0, startIndex = 0, endIndex = -1 } = args;
+        const { pageIndex = 0, styleName, frameIndex = 0, startIndex = 0, endIndex = -1 } = args;
 
         const code = `
             if (app.documents.length === 0) return { success: false, error: 'No document open' };
             const doc = app.activeDocument;
-            const page = doc.pages.item(0);
-            if (${frameIndex} >= page.textFrames.length) return { success: false, error: 'Text frame index out of range' };
+            const pageIndex = ${JSON.stringify(pageIndex)};
+            if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= doc.pages.length) return { success: false, error: 'Page index out of range' };
+            const page = doc.pages.item(pageIndex);
+            if (${frameIndex} < 0 || ${frameIndex} >= page.textFrames.length) return { success: false, error: 'Text frame index out of range' };
             const textFrame = page.textFrames.item(${frameIndex});
             const style = doc.characterStyles.itemByName(${JSON.stringify(styleName)});
             if (!style.isValid) return { success: false, error: 'Character style not found: ' + ${JSON.stringify(styleName)} };
@@ -304,28 +308,25 @@ export class StyleHandlers {
      * Apply a color to text or graphics
      */
     static async applyColor(args) {
-        const { colorName, targetType = 'text', frameIndex = 0 } = args;
+        const { pageIndex = 0, objectIndex, colorName, colorType = 'FILL' } = args;
 
         const code = `
             if (app.documents.length === 0) return { success: false, error: 'No document open' };
             const doc = app.activeDocument;
-            const page = doc.pages.item(0);
+            const pageIndex = ${JSON.stringify(pageIndex)};
+            const objectIndex = ${JSON.stringify(objectIndex)};
+            const colorType = ${JSON.stringify(colorType)};
+            if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= doc.pages.length) return { success: false, error: 'Page index out of range' };
+            if (!Number.isInteger(objectIndex) || objectIndex < 0) return { success: false, error: 'Object index out of range' };
+            if (colorType !== 'FILL' && colorType !== 'STROKE') return { success: false, error: 'Invalid color type. Use: FILL or STROKE' };
+            const page = doc.pages.item(pageIndex);
+            if (objectIndex >= page.allPageItems.length) return { success: false, error: 'Object index out of range' };
             const color = doc.colors.itemByName(${JSON.stringify(colorName)});
             if (!color.isValid) return { success: false, error: 'Color not found: ' + ${JSON.stringify(colorName)} };
-            const target = ${JSON.stringify(targetType)};
-            if (target === 'text') {
-                if (${frameIndex} >= page.textFrames.length) return { success: false, error: 'Text frame index out of range' };
-                page.textFrames.item(${frameIndex}).texts.item(0).fillColor = color;
-            } else if (target === 'rectangle') {
-                if (${frameIndex} >= page.rectangles.length) return { success: false, error: 'Rectangle index out of range' };
-                page.rectangles.item(${frameIndex}).fillColor = color;
-            } else if (target === 'ellipse') {
-                if (${frameIndex} >= page.ovals.length) return { success: false, error: 'Ellipse index out of range' };
-                page.ovals.item(${frameIndex}).fillColor = color;
-            } else {
-                return { success: false, error: 'Invalid target type. Use: text, rectangle, or ellipse' };
-            }
-            return { success: true, colorName: ${JSON.stringify(colorName)}, targetType: target, frameIndex: ${frameIndex} };
+            const item = page.allPageItems[objectIndex];
+            if (colorType === 'FILL') item.fillColor = color;
+            else item.strokeColor = color;
+            return { success: true, colorName: ${JSON.stringify(colorName)}, pageIndex, objectIndex, colorType };
         `;
 
         const result = await ScriptExecutor.executeViaUXP(code);

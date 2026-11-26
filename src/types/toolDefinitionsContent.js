@@ -33,6 +33,7 @@ export const contentToolDefinitions = [
         inputSchema: {
             type: 'object',
             properties: {
+                pageIndex: { type: 'integer', description: 'Index of the page containing the text frame', default: 0 },
                 frameIndex: { type: 'number', description: 'Index of the text frame to edit' },
                 content: { type: 'string', description: 'New text content' },
                 fontSize: { type: 'number', description: 'Font size in points' },
@@ -224,6 +225,7 @@ export const contentToolDefinitions = [
         inputSchema: {
             type: 'object',
             properties: {
+                pageIndex: { type: 'integer', description: 'Index of the page containing the item', default: 0 },
                 styleName: { type: 'string', description: 'Object style name' },
                 itemType: { type: 'string', enum: ['rectangle', 'ellipse', 'polygon'], default: 'rectangle' },
                 itemIndex: { type: 'number', description: 'Item index', default: 0 },
@@ -284,10 +286,27 @@ export const contentToolDefinitions = [
         inputSchema: {
             type: 'object',
             properties: {
+                pageIndex: { type: 'integer', description: 'Index of the page containing the text frame', default: 0 },
                 styleName: { type: 'string', description: 'Paragraph style name' },
                 frameIndex: { type: 'number', description: 'Text frame index' },
             },
             required: ['styleName', 'frameIndex'],
+        },
+    },
+    {
+        name: 'apply_character_style',
+        description: 'Apply a character style to text',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                pageIndex: { type: 'integer', description: 'Index of the page containing the text frame', default: 0 },
+                styleName: { type: 'string', description: 'Character style name' },
+                frameIndex: { type: 'number', description: 'Text frame index', default: 0 },
+                startIndex: { type: 'integer', description: 'First character index', default: 0 },
+                endIndex: { type: 'integer', description: 'Last character index; -1 applies to all text', default: -1 },
+            },
+            required: ['styleName'],
+            additionalProperties: false,
         },
     },
     {
@@ -328,7 +347,8 @@ export const contentToolDefinitions = [
         inputSchema: {
             type: 'object',
             properties: {
-                objectIndex: { type: 'number', description: 'Object index' },
+                pageIndex: { type: 'integer', description: 'Index of the page containing the object', default: 0 },
+                objectIndex: { type: 'number', description: 'Index in page.allPageItems' },
                 colorName: { type: 'string', description: 'Color swatch name' },
                 colorType: { type: 'string', enum: ['FILL', 'STROKE'], default: 'FILL' },
             },

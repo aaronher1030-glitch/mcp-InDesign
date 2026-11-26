@@ -137,6 +137,7 @@ export class TextHandlers {
      */
     static async editTextFrame(args) {
         const {
+            pageIndex = 0,
             frameIndex,
             content,
             fontSize,
@@ -150,9 +151,13 @@ export class TextHandlers {
                 return { success: false, error: 'No document open' };
             }
             const doc = app.activeDocument;
-            const page = doc.pages.item(0);
+            const pageIndex = ${JSON.stringify(pageIndex)};
+            if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= doc.pages.length) {
+                return { success: false, error: 'Page index out of range' };
+            }
+            const page = doc.pages.item(pageIndex);
 
-            if (${frameIndex} >= page.textFrames.length) {
+            if (${frameIndex} < 0 || ${frameIndex} >= page.textFrames.length) {
                 return { success: false, error: 'Text frame index out of range' };
             }
 

@@ -173,7 +173,7 @@ test('all and only the exact lifecycle status names are accepted', () => {
 });
 
 test('enforces the five-target and one-page low-risk boundaries', () => {
-  const five = plan();
+  const five = plan([{ toolName: 'move_page_item', targetIndex: 0, arguments: { x: 10, y: 20 } }]);
   five.targets = Array.from({ length: 5 }, (_, itemIndex) => ({ pageIndex: 0, itemIndex, before: { geometricBounds: [0, 0, 20, 20] } }));
   assert.equal(classifyPlanRisk(normalize({ plan: five })), 'low');
 
@@ -364,4 +364,210 @@ test('affected pages must include every target and step page', () => {
   const result = validatePlan(value);
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((error) => error.includes('affectedPages')));
+});
+
+test('normalization rejects a targetIndex/itemIndex contradiction with TypeError', () => {
+  const input = plan([{
+    toolName: 'move_page_item',
+    targetIndex: 0,
+    arguments: { itemIndex: 1, x: 10, y: 20 },
+  }]);
+  assert.throws(
+    () => normalize({ plan: input }),
+    (error) => error instanceof TypeError && /targetIndex.*itemIndex|itemIndex.*targetIndex/i.test(error.message),
+  );
+});
+
+test('normalization rejects every schema-supported selector/argument identity conflict', () => {
+  const cases = [
+    ['move_page_item', 'pageIndex', { itemIndex: 0, x: 1, y: 2 }],
+    ['move_page_item', 'itemIndex', { pageIndex: 0, x: 1, y: 2 }],
+    ['edit_text_frame', 'frameIndex', { pageIndex: 0, content: 'Changed' }],
+    ['apply_object_style', 'itemIndex', { pageIndex: 0, styleName: 'Card' }],
+    ['apply_color', 'objectIndex', { pageIndex: 0, colorName: 'Red' }],
+  ];
+  for (const [toolName, key, args] of cases) {
+    const input = plan([{ toolName, targetIndex: 0, arguments: { ...args, [key]: 1 } }]);
+    assert.throws(() => normalize({ plan: input }), TypeError, `${toolName}.${key}`);
+  }
+});
+
+test('all supplied target selectors must resolve to the same target', () => {
+  const input = plan([{
+    toolName: 'move_page_item',
+    targetIndex: 0,
+    targetId: 'target-b',
+    arguments: { x: 1, y: 2 },
+  }]);
+  input.targets = [
+    { id: 'target-a', pageIndex: 0, itemIndex: 0, before: {} },
+    { id: 'target-b', pageIndex: 0, itemIndex: 1, before: {} },
+  ];
+  assert.throws(() => normalize({ plan: input }), TypeError);
+
+  input.steps[0].targetId = 'target-a';
+  input.steps[0].targetFingerprint = targetFingerprint(input.targets[0]);
+  const value = normalize({ plan: input });
+  assert.equal(value.steps[0].targetFingerprint, value.targets[0].fingerprint);
+  assert.deepEqual(value.steps[0].arguments, { pageIndex: 0, itemIndex: 0, x: 1, y: 2 });
+});
+
+test('invalid explicit selectors never fall back to another target', () => {
+  for (const selector of [
+    { targetIndex: 9 },
+    { targetIndex: -1 },
+    { targetIndex: '0' },
+    { targetId: 'missing' },
+    { targetFingerprint: '0'.repeat(64) },
+  ]) {
+    const input = plan([{
+      toolName: 'move_page_item',
+      ...selector,
+      arguments: { pageIndex: 0, itemIndex: 0, x: 1, y: 2 },
+    }]);
+    input.targets.push({ pageIndex: 0, itemIndex: 1, before: {} });
+    const value = normalize({ plan: input });
+    assert.equal(value.steps[0].targetFingerprint, undefined, JSON.stringify(selector));
+    assert.equal(value.steps[0].risk, 'high');
+    assert.equal(value.risk, 'high');
+    assert.equal(value.status, 'approval_required');
+    assert.equal(validatePlan(value).valid, false);
+  }
+});
+
+test('ambiguous identity associations remain unassociated and fail validation', () => {
+  const input = plan([{ toolName: 'move_page_item', arguments: { pageIndex: 0, x: 1, y: 2 } }]);
+  input.targets.push({ pageIndex: 0, itemIndex: 1, before: {} });
+  const value = normalize({ plan: input });
+  assert.equal(value.steps[0].targetFingerprint, undefined);
+  assert.equal(value.risk, 'high');
+  assert.equal(validatePlan(value).valid, false);
+});
+
+test('pageId-only targets cannot be low risk or validate as concrete targets', () => {
+  const input = plan();
+  delete input.targets[0].pageIndex;
+  delete input.targets[0].itemIndex;
+  input.targets[0].pageId = 'page-0';
+  const value = normalize({ plan: input });
+  assert.equal(value.risk, 'high');
+  assert.equal(value.status, 'approval_required');
+  assert.equal(validatePlan(value).valid, false);
+});
+
+test('empty move arguments cannot normalize as low risk', () => {
+  const value = normalize({ plan: plan([{ toolName: 'move_page_item', arguments: {} }]) });
+  assert.equal(value.risk, 'high');
+  assert.equal(value.steps[0].risk, 'high');
+  assert.equal(value.status, 'approval_required');
+  assert.equal(validatePlan(value).valid, false);
+});
+
+test('two-target steps without an association stay high risk without a fingerprint', () => {
+  const input = plan([{ toolName: 'move_page_item', arguments: { x: 1, y: 2 } }]);
+  input.targets.push({ pageIndex: 0, itemIndex: 1, before: {} });
+  const value = normalize({ plan: input });
+  assert.equal(value.steps[0].targetFingerprint, undefined);
+  assert.equal(value.risk, 'high');
+  assert.equal(value.status, 'approval_required');
+  assert.equal(validatePlan(value).valid, false);
+});
+
+test('normalization trims skill IDs and keeps multi-page-consistency always high risk', () => {
+  const value = normalize({ skillId: '  multi-page-consistency\t' });
+  assert.equal(value.skillId, 'multi-page-consistency');
+  assert.equal(value.risk, 'high');
+  assert.equal(value.status, 'approval_required');
+  assert.equal(validatePlan(value).valid, true);
+});
+
+test('validation rejects noncanonical skill IDs', () => {
+  const value = normalize({ skillId: ' align-distribute ' });
+  assert.equal(value.skillId, 'align-distribute');
+  value.skillId = ' align-distribute ';
+  const result = validatePlan(value);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((error) => error.includes('skillId')));
+});
+
+test('unassociated step arguments are deeply cloned from caller input', () => {
+  const input = plan([{
+    toolName: 'future_operation',
+    arguments: { metadata: { labels: ['original'] } },
+  }]);
+  input.targets.push({ pageIndex: 0, itemIndex: 1, before: {} });
+  const value = normalize({ plan: input });
+  assert.equal(value.steps[0].targetFingerprint, undefined);
+  input.steps[0].arguments.metadata.labels[0] = 'mutated';
+  input.steps[0].arguments.metadata.added = true;
+  assert.deepEqual(value.steps[0].arguments, { metadata: { labels: ['original'] } });
+});
+
+test('document fingerprints must be exactly 64 lowercase hexadecimal characters', () => {
+  for (const fingerprint of ['', 'captured-fingerprint', '0'.repeat(63), '0'.repeat(65), 'A'.repeat(64), 'g'.repeat(64)]) {
+    const value = normalize();
+    value.documentFingerprint = fingerprint;
+    const result = validatePlan(value);
+    assert.equal(result.valid, false, fingerprint);
+    assert.ok(result.errors.some((error) => error.includes('documentFingerprint')), fingerprint);
+  }
+  assert.equal(validatePlan({ ...normalize(), documentFingerprint: 'a'.repeat(64) }).valid, true);
+});
+
+test('apply_color normalizes to the selected page and allPageItems object index', () => {
+  const input = plan([{
+    toolName: 'apply_color',
+    targetIndex: 0,
+    arguments: { colorName: 'Red', colorType: 'STROKE' },
+  }]);
+  input.targets = [{ pageIndex: 2, itemIndex: 3, before: {} }];
+  input.affectedPages = [2];
+  const value = normalize({ plan: input });
+  assert.deepEqual(value.steps[0].arguments, { pageIndex: 2, objectIndex: 3, colorName: 'Red', colorType: 'STROKE' });
+  assert.equal(value.risk, 'low');
+  assert.equal(validatePlan(value).valid, true);
+});
+
+test('classification independently rejects malformed or contradictory hand-built plans', () => {
+  const valid = normalize();
+  const duplicate = structuredClone(valid);
+  duplicate.targets.push(structuredClone(duplicate.targets[0]));
+  const cases = [
+    { ...valid, skillId: ' multi-page-consistency ' },
+    { ...valid, skillId: ' align-distribute ' },
+    { ...valid, documentFingerprint: 'not-a-fingerprint' },
+    { ...valid, targets: [{ ...valid.targets[0], pageId: 'page-0', pageIndex: undefined }] },
+    { ...valid, targets: [{ ...valid.targets[0], fingerprint: undefined }] },
+    { ...valid, targets: [{ ...valid.targets[0], fingerprint: '0'.repeat(64) }] },
+    duplicate,
+    { ...valid, steps: [{ ...valid.steps[0], targetFingerprint: undefined }] },
+    { ...valid, steps: [{ ...valid.steps[0], targetFingerprint: '0'.repeat(64) }] },
+    { ...valid, steps: [{ ...valid.steps[0], arguments: {} }] },
+    { ...valid, steps: [{ ...valid.steps[0], arguments: { pageIndex: 0, itemIndex: 0 } }] },
+    { ...valid, steps: [{ ...valid.steps[0], arguments: { pageIndex: 1, itemIndex: 0, x: 1, y: 2 } }] },
+    { ...valid, steps: [{ ...valid.steps[0], arguments: { pageIndex: 0, itemIndex: 1, x: 1, y: 2 } }] },
+    { ...valid, steps: [{ ...valid.steps[0], targetIndex: 9 }] },
+    { ...valid, steps: [{ ...valid.steps[0], reversible: 'true' }] },
+  ];
+  for (const malformed of cases) assert.equal(classifyPlanRisk(malformed), 'high');
+});
+
+test('classification requires valid required fields and enums for every allowlisted tool', () => {
+  const cases = [
+    ['resize_page_item', { pageIndex: 0, itemIndex: 0, width: 10 }],
+    ['edit_text_frame', { pageIndex: 0, content: 'Changed' }],
+    ['edit_text_frame', { pageIndex: 0, frameIndex: 0, alignment: 'MIDDLE' }],
+    ['apply_paragraph_style', { pageIndex: 0, frameIndex: 0 }],
+    ['apply_object_style', { pageIndex: 0, itemIndex: 0, styleName: 'Card', itemType: 'text' }],
+    ['apply_color', { pageIndex: 0, objectIndex: 0, colorName: 'Red', colorType: 'BACKGROUND' }],
+  ];
+  for (const [toolName, args] of cases) {
+    const value = normalize();
+    value.steps = [{
+      id: 'hand-built-step', toolName, arguments: args,
+      targetFingerprint: value.targets[0].fingerprint,
+      expectedResult: {}, reversible: true, risk: 'low',
+    }];
+    assert.equal(classifyPlanRisk(value), 'high', toolName);
+  }
 });
