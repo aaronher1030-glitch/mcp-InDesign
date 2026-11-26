@@ -449,12 +449,56 @@ test('rejects unapproved and forbidden backticked tool references anywhere in Ma
   }
 });
 
+test('rejects padded and call-shaped unapproved and forbidden backticked tool references', async (t) => {
+  const cases = [
+    ['a padded unapproved tool', '` save_document `', /save_document.*allowed|not.*allowed/i],
+    ['a call-shaped unapproved tool', '`save_document()`', /save_document.*allowed|not.*allowed/i],
+    ['a padded call-shaped unapproved tool', '` save_document () `', /save_document.*allowed|not.*allowed/i],
+    ['a padded forbidden tool', '` execute_indesign_code `', /execute_indesign_code.*allowed|not.*allowed/i],
+    ['a call-shaped forbidden tool', '`execute_indesign_code()`', /execute_indesign_code.*allowed|not.*allowed/i],
+    ['a padded call-shaped forbidden tool', '` execute_indesign_code () `', /execute_indesign_code.*allowed|not.*allowed/i],
+  ];
+  for (const [name, reference, expectedError] of cases) {
+    await t.test(name, async (t) => {
+      await withFixture(t, {}, async (skillsDir) => {
+        const path = join(skillsDir, 'safe-layout-edit.md');
+        const content = readFileSync(path, 'utf8').replace(
+          'Use it when the request identifies existing content that needs a controlled edit.',
+          `Use it when the request identifies existing content that needs a controlled edit. Avoid ${reference}.`,
+        );
+        writeFileSync(path, content);
+        await assert.rejects(() => loadSkillCatalog(skillsDir), expectedError);
+      });
+    });
+  }
+});
+
+test('rejects unapproved and forbidden backticked tool calls with arguments', async (t) => {
+  const cases = [
+    ['an unapproved tool call with arguments', '`save_document({})`', /save_document.*allowed|not.*allowed/i],
+    ['a forbidden tool call with arguments', '`execute_indesign_code({})`', /execute_indesign_code.*allowed|not.*allowed/i],
+  ];
+  for (const [name, reference, expectedError] of cases) {
+    await t.test(name, async (t) => {
+      await withFixture(t, {}, async (skillsDir) => {
+        const path = join(skillsDir, 'safe-layout-edit.md');
+        const content = readFileSync(path, 'utf8').replace(
+          'Use it when the request identifies existing content that needs a controlled edit.',
+          `Use it when the request identifies existing content that needs a controlled edit. Avoid ${reference}.`,
+        );
+        writeFileSync(path, content);
+        await assert.rejects(() => loadSkillCatalog(skillsDir), expectedError);
+      });
+    });
+  }
+});
+
 test('allows approved tool references and ordinary backticked prose', async (t) => {
   await withFixture(t, {}, async (skillsDir) => {
     const path = join(skillsDir, 'safe-layout-edit.md');
     const content = readFileSync(path, 'utf8').replace(
       'Use it when the request identifies existing content that needs a controlled edit.',
-      'Use it when the request identifies `existing content`, `page 1`, or `safe-layout-edit` that needs a controlled edit.',
+      'Use it when the request identifies `existing content`, `page 1`, `safe-layout-edit`, ` inspect_layout `, `verify_layout()`, or `inspect_layout({})` that needs a controlled edit.',
     );
     writeFileSync(path, content);
     const skills = await loadSkillCatalog(skillsDir);

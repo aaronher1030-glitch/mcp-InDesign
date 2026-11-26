@@ -253,7 +253,7 @@ function validateMarkdown(content, meta) {
 
   // MCP tool names use snake_case; other inline code remains ordinary prose.
   for (const match of content.matchAll(/`([^`\r\n]+)`/g)) {
-    const reference = match[1];
+    const reference = match[1].trim().replace(/^([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\s*\(.*\)$/, '$1');
     if (/^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(reference) && !meta.allowedTools.includes(reference)) {
       throw skillError(meta.id, `Markdown tool reference \`${reference}\` is not in allowedTools.`);
     }
