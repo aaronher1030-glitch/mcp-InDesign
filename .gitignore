@@ -111,6 +111,9 @@ Desktop.ini
 # Playwright CLI cache
 .playwright-cli/
 
+# Local subagent review artifacts
+.superpowers/
+
 # Ad-hoc screenshots
 hn-submit.png
 # Local test fixture (the suite edits it every run)

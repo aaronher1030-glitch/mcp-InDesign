@@ -1,6 +1,8 @@
 const { WebSocketServer } = require('ws');
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
+const path = require('path');
+const { pathToFileURL } = require('url');
 
 const WS_PORT = 3001;
 const HTTP_PORT = 3000;
@@ -15,7 +17,18 @@ if (!BRIDGE_TOKEN) {
 }
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '4mb' }));
+
+let chatActive = false;
+let chatModulePromise;
+
+function loadChatModule() {
+  if (!chatModulePromise) {
+    const agentPath = path.join(__dirname, '..', 'src', 'chat', 'agent.js');
+    chatModulePromise = import(pathToFileURL(agentPath).href);
+  }
+  return chatModulePromise;
+}
 
 // Auth middleware — only applied when BRIDGE_TOKEN is configured
 if (BRIDGE_TOKEN) {
@@ -157,7 +170,7 @@ app.get('/status', (req, res) => {
 app.post('/execute', async (req, res) => {
   if (!pluginSocket) {
     return res.status(503).json({
-      error: 'Plugin not connected. Open InDesign, then load the Bridge Panel via UXP Developer Tool.'
+      error: 'Plugin not connected. In InDesign, open Window → Plugins → InDesign Copilot.'
     });
   }
 
@@ -171,6 +184,52 @@ app.post('/execute', async (req, res) => {
     res.json({ result });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// In-app chat. The UXP panel posts here; tool calls go back out through /execute.
+// The API key is used for this request only and is never written to disk or logs.
+app.post('/chat', async (req, res) => {
+  if (!pluginSocket) {
+    return res.status(503).json({
+      error: 'InDesign is not connected. Open Window → Plugins → InDesign Copilot and wait until it says connected.',
+    });
+  }
+  if (chatActive) {
+    return res.status(409).json({ error: 'A chat turn is already running.' });
+  }
+
+  const { messages, settings } = req.body || {};
+  chatActive = true;
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+  let closed = false;
+  res.on('close', () => {
+    if (!res.writableEnded) closed = true;
+  });
+
+  const emit = (event) => {
+    if (closed || res.writableEnded) return;
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  };
+
+  try {
+    console.log('[Bridge] Chat turn started');
+    const { runChat } = await loadChatModule();
+    await runChat({
+      messages,
+      settings,
+      emit,
+      shouldStop: () => closed,
+    });
+  } catch (err) {
+    emit({ type: 'error', message: err.message || String(err) });
+  } finally {
+    chatActive = false;
+    if (!res.writableEnded) res.end();
   }
 });
 

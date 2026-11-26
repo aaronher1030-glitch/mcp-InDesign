@@ -1,8 +1,124 @@
 <!DOCTYPE html>
 <html>
-<head><title>Bridge</title></head>
+<head>
+  <meta charset="utf-8" />
+  <title>InDesign Copilot</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--uxp-host-background-color, #2b2b2b);
+      color: var(--uxp-host-text-color, #f2f2f2);
+      font: 12px/1.4 "Adobe Clean", "Segoe UI", sans-serif;
+    }
+    body { display: flex; flex-direction: column; min-height: 100%; }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--uxp-host-border-color, #444);
+    }
+    header h1 { font-size: 13px; font-weight: 650; margin: 0; flex: 1; }
+    #status { font-size: 11px; opacity: 0.8; }
+    button, input, select, textarea {
+      font: inherit;
+      color: inherit;
+      background: var(--uxp-host-widget-background-color, #3a3a3a);
+      border: 1px solid var(--uxp-host-border-color, #555);
+      border-radius: 4px;
+    }
+    button { padding: 4px 8px; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    #settings {
+      display: none;
+      padding: 8px 10px 10px;
+      border-bottom: 1px solid var(--uxp-host-border-color, #444);
+      gap: 6px;
+    }
+    #settings.open { display: flex; flex-direction: column; }
+    label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
+    input, select { padding: 4px 6px; }
+    #settings p { margin: 0; font-size: 11px; opacity: 0.75; }
+    #log {
+      flex: 1;
+      overflow: auto;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .msg { max-width: 100%; white-space: pre-wrap; word-break: break-word; }
+    .msg.user {
+      align-self: flex-end;
+      background: #3d5a80;
+      color: #fff;
+      padding: 6px 8px;
+      border-radius: 8px 8px 2px 8px;
+    }
+    .msg.assistant {
+      align-self: flex-start;
+      padding: 2px 0;
+    }
+    .tool {
+      align-self: stretch;
+      font-size: 11px;
+      opacity: 0.85;
+      border-left: 2px solid var(--uxp-host-border-color, #666);
+      padding: 2px 0 2px 8px;
+    }
+    .tool summary { cursor: pointer; }
+    .empty { opacity: 0.7; }
+    form {
+      display: flex;
+      gap: 6px;
+      padding: 8px;
+      border-top: 1px solid var(--uxp-host-border-color, #444);
+    }
+    textarea {
+      flex: 1;
+      resize: none;
+      min-height: 48px;
+      padding: 6px;
+    }
+    #activity { padding: 0 10px 6px; font-size: 11px; opacity: 0.75; min-height: 14px; }
+  </style>
+</head>
 <body>
-  <p id="status">Initializing...</p>
+  <header>
+    <h1>InDesign Copilot</h1>
+    <span id="status">Starting…</span>
+    <button id="settingsBtn" type="button">Model</button>
+    <button id="clearBtn" type="button">Clear</button>
+  </header>
+  <section id="settings">
+    <label>Provider
+      <select id="provider">
+        <option value="openai">OpenAI-compatible</option>
+        <option value="anthropic">Anthropic</option>
+      </select>
+    </label>
+    <label>Base URL
+      <input id="baseUrl" type="text" placeholder="https://api.openai.com/v1" />
+    </label>
+    <label>Model
+      <input id="model" type="text" placeholder="gpt-4.1, claude-sonnet-4-5, or any id" />
+    </label>
+    <label>API key
+      <input id="apiKey" type="password" placeholder="Stored only in this panel" autocomplete="off" />
+    </label>
+    <p>OpenAI-compatible also covers OpenRouter, Groq, Together, Ollama, LM Studio, and Gemini’s OpenAI endpoint. The key is sent only to that URL, through this computer.</p>
+    <button id="saveSettings" type="button">Save</button>
+  </section>
+  <div id="log">
+    <div class="empty" id="empty">Ask to move, resize, or restyle something on the open page. The frames update in the layout as the model works.</div>
+  </div>
+  <div id="activity"></div>
+  <form id="composer">
+    <textarea id="input" placeholder="Move the headline down 12 points"></textarea>
+    <button id="send" type="submit">Send</button>
+  </form>
   <script src="index.js"></script>
 </body>
 </html>

@@ -2,9 +2,10 @@
  * Export handlers
  */
 import { statSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { ScriptExecutor } from '../core/scriptExecutor.js';
 import { formatResponse, formatErrorResponse, escapeJsxString } from '../utils/stringUtils.js';
+import { parsePageRange } from '../utils/pageRange.js';
 
 export class ExportHandlers {
     /**
@@ -111,46 +112,63 @@ export class ExportHandlers {
      */
     static async exportImages(args) {
         const {
-            folderPath,
-            format = 'JPEG',
-            quality = 80,
-            resolution = 300,
-            pageRange = 'all'
+            outputPath,
+            format = 'PNG',
+            quality = 90,
+            resolution = 144,
+            pages = 'all'
         } = args;
 
+        const outputDirectory = resolve(outputPath);
         const formatLower = format.toLowerCase();
-
-        // M4: validate pageRange entries before sending to UXP — invalid entries were
-        // silently skipped, returning a count lower than expected with no error reported
-        if (pageRange !== 'all') {
-            const entries = pageRange.split(',');
-            const invalid = entries.filter(p => {
-                const n = parseInt(p.trim(), 10);
-                return isNaN(n) || n < 1;
-            });
-            if (invalid.length > 0) {
-                return formatErrorResponse(
-                    `Invalid page range entries (must be positive integers): ${invalid.join(', ')}`,
-                    "Export Images"
-                );
+        const pageCount = await ScriptExecutor.executeViaUXP(`
+            if (app.documents.length === 0) {
+                return { success: false, error: 'No document open' };
             }
+            return app.activeDocument.pages.length;
+        `);
+        if (pageCount?.success === false) {
+            return formatErrorResponse(pageCount.error || 'Failed to count document pages', "Export Images");
+        }
+
+        let pageIndexes;
+        try {
+            pageIndexes = parsePageRange(pages, pageCount);
+        } catch (error) {
+            return formatErrorResponse(error.message, "Export Images");
         }
 
         const code = `
-            const { ExportFormat } = require('indesign');
+            const { ExportFormat, JPEGOptionsQuality } = require('indesign');
             if (app.documents.length === 0) {
                 return { success: false, error: 'No document open' };
             }
             const doc = app.activeDocument;
-            const folder = ${JSON.stringify(folderPath)};
+            const folder = ${JSON.stringify(outputDirectory)};
+            const pageIndexes = ${JSON.stringify(pageIndexes)};
+            let prefs = null;
+            const saved = {};
 
             try {
                 const formatStr = ${JSON.stringify(format)};
                 let exportFormat;
                 if (formatStr === 'JPEG') {
                     exportFormat = ExportFormat.jpegType;
+                    prefs = app.jpegExportPreferences;
+                    saved.exportResolution = prefs.exportResolution;
+                    saved.jpegQuality = prefs.jpegQuality;
+                    prefs.exportResolution = ${JSON.stringify(resolution)};
+                    // InDesign exposes four JPEG quality levels rather than a 1-100 scale.
+                    const quality = ${JSON.stringify(quality)};
+                    prefs.jpegQuality = quality >= 76 ? JPEGOptionsQuality.MAXIMUM
+                        : quality >= 51 ? JPEGOptionsQuality.HIGH
+                        : quality >= 26 ? JPEGOptionsQuality.MEDIUM
+                        : JPEGOptionsQuality.LOW;
                 } else if (formatStr === 'PNG') {
                     exportFormat = ExportFormat.pngType;
+                    prefs = app.pngExportPreferences;
+                    saved.exportResolution = prefs.exportResolution;
+                    prefs.exportResolution = ${JSON.stringify(resolution)};
                 } else if (formatStr === 'TIFF') {
                     exportFormat = ExportFormat.tiffType;
                 } else {
@@ -158,37 +176,45 @@ export class ExportHandlers {
                 }
 
                 const ext = ${JSON.stringify(formatLower)};
-                const pageRangeStr = ${JSON.stringify(pageRange)};
-                let exportedCount = 0;
-
-                if (pageRangeStr !== 'all') {
-                    const pages = pageRangeStr.split(',');
-                    for (let i = 0; i < pages.length; i++) {
-                        const pageNum = parseInt(pages[i]) - 1;
-                        if (pageNum >= 0 && pageNum < doc.pages.length) {
-                            const fileName = folder + '/page_' + (pageNum + 1) + '.' + ext;
-                            await doc.pages.item(pageNum).exportFile(exportFormat, fileName, false);
-                            exportedCount++;
-                        }
-                    }
-                } else {
-                    for (let i = 0; i < doc.pages.length; i++) {
-                        const fileName = folder + '/page_' + (i + 1) + '.' + ext;
-                        await doc.pages.item(i).exportFile(exportFormat, fileName, false);
-                        exportedCount++;
-                    }
+                const files = [];
+                for (const pageIndex of pageIndexes) {
+                    const fileName = folder + '/page_' + (pageIndex + 1) + '.' + ext;
+                    await doc.pages.item(pageIndex).exportFile(exportFormat, fileName, false);
+                    files.push(fileName);
                 }
 
-                return { success: true, count: exportedCount };
+                return { success: true, count: files.length, files };
             } catch(e) {
                 return { success: false, error: 'Error exporting images: ' + e.message };
+            } finally {
+                if (prefs) {
+                    for (const key of Object.keys(saved).reverse()) {
+                        try { prefs[key] = saved[key]; } catch (e) {}
+                    }
+                }
             }
         `;
 
         const result = await ScriptExecutor.executeViaUXP(code);
-        return result?.success ?
-            formatResponse(`${result.count} pages exported as ${format} images to: ${folderPath}`, "Export Images") :
-            formatErrorResponse(result?.error || 'Failed to export images', "Export Images");
+        if (!result?.success) {
+            return formatErrorResponse(result?.error || 'Failed to export images', "Export Images");
+        }
+
+        const files = pageIndexes.map((pageIndex) =>
+            join(outputDirectory, `page_${pageIndex + 1}.${formatLower}`)
+        );
+        for (const filePath of files) {
+            try {
+                const stats = statSync(filePath);
+                if (!stats.isFile() || stats.size === 0) {
+                    return formatErrorResponse(`Exported image is missing or empty: ${filePath}`, "Export Images");
+                }
+            } catch {
+                return formatErrorResponse(`Exported image was not found: ${filePath}`, "Export Images");
+            }
+        }
+
+        return formatResponse({ count: files.length, files }, "Export Images");
     }
 
     /**

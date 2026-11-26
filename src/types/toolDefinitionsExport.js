@@ -22,15 +22,15 @@ export const exportToolDefinitions = [
     },
     {
         name: 'export_images',
-        description: 'Export pages as images',
+        description: 'Export selected pages as PNG, JPEG, or TIFF images',
         inputSchema: {
             type: 'object',
             properties: {
-                outputPath: { type: 'string', description: 'Output directory path' },
-                format: { type: 'string', enum: ['JPEG', 'PNG', 'TIFF'], default: 'JPEG' },
-                resolution: { type: 'number', description: 'Resolution in DPI', default: 300 },
-                pages: { type: 'string', description: 'Page range (e.g., "1-5", "all")', default: 'all' },
-                quality: { type: 'number', description: 'Quality (1-100 for JPEG)', default: 80 },
+                outputPath: { type: 'string', description: 'Existing output directory' },
+                format: { type: 'string', enum: ['PNG', 'JPEG', 'TIFF'], default: 'PNG' },
+                resolution: { type: 'number', description: 'Resolution in DPI', default: 144 },
+                pages: { type: 'string', description: 'all, 3, 1-5, or 1,3,5-7', default: 'all' },
+                quality: { type: 'number', description: 'JPEG quality 1-100', default: 90 },
             },
             required: ['outputPath'],
         },

@@ -1,5 +1,26 @@
 # InDesign UXP MCP Server
 
+This copy adds an **InDesign Copilot** chat panel on top of [theloniuser/indesign-uxp-server](https://github.com/theloniuser/indesign-uxp-server). The panel is the conversation. The same tools still move, resize, and inspect page items, and Cursor can keep using the MCP server.
+
+The model is whichever one your API key can call. Choose OpenAI-compatible (OpenAI, OpenRouter, Groq, Together, Ollama, LM Studio, or Gemini’s OpenAI endpoint) or Anthropic, then type the model id. The key stays in the panel and is sent only to the base URL you enter.
+
+### Chat panel on Windows
+
+1. Install [Node.js 18+](https://nodejs.org/) and Adobe InDesign 2024 or later.
+2. In this folder run `npm install`.
+3. Start the bridge, and leave that window open:
+
+```powershell
+npm run bridge
+```
+
+4. Install [Adobe UXP Developer Tool](https://developer.adobe.com/indesign/uxp/guides/), add the `plugin` folder, and load it into InDesign.
+5. In InDesign choose **Window → Plugins → InDesign Copilot**. The header should say **Connected**.
+6. Click **Model**, enter the provider, base URL if it is not the default, model id, and API key, then **Save**.
+7. With a document open, ask it to move or restyle an object. It lists the page items first, then edits them in the live layout.
+
+Cursor can use the same bridge. Add this MCP server with `node` and the full path to `src/index.js`. Do not start a second bridge; `npm start` reuses the one already running.
+
 > **Forked from** [zachshallbetter/indesign-mcp-server](https://github.com/zachshallbetter/indesign-mcp-server) — rewritten to use Adobe's UXP plugin platform instead of AppleScript.
 
 A Model Context Protocol (MCP) server that gives AI assistants direct, native control over Adobe InDesign via a UXP plugin bridge. ~130 tools covering the full InDesign feature set — documents, pages, text, graphics, styles, master spreads, books, and export.
@@ -84,9 +105,9 @@ cd bridge && node server.js
 
 ### 3. Connect the Plugin
 
-In InDesign: **Window → Plugins → InDesign Bridge**
+In InDesign: **Window → Plugins → InDesign Copilot**
 
-The panel should show: `Connected to bridge ✓`
+The panel should show: `Connected`
 
 ### 4. Start the MCP Server
 
