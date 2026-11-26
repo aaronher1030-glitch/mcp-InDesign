@@ -160,7 +160,9 @@ async function withFixture(_t, options, run) {
     }
     if (Array.isArray(manifest.skills)) {
       for (const skill of manifest.skills) {
-        if (!/^[a-z0-9-]+$/.test(skill.id ?? '') || options.omitMarkdown?.includes(skill.id)) continue;
+        if (!skill || typeof skill !== 'object' || Array.isArray(skill)) continue;
+        if (typeof skill.id !== 'string' || !/^[a-z0-9-]+$/.test(skill.id)) continue;
+        if (options.omitMarkdown?.includes(skill.id)) continue;
         writeFileSync(join(skillsDir, `${skill.id}.md`), createMarkdown(skill));
       }
     }
@@ -244,9 +246,13 @@ test('rejects malformed JSON and a missing manifest', async (t) => {
 });
 
 test('rejects a manifest without a skills array', async (t) => {
-  await withFixture(t, { manifest: { skills: {} } }, async (skillsDir) => {
-    await assert.rejects(() => loadSkillCatalog(skillsDir), /skills.*array/i);
-  });
+  for (const [name, manifest] of [['missing skills', {}], ['non-array skills', { skills: {} }]]) {
+    await t.test(name, async (t) => {
+      await withFixture(t, { manifest }, async (skillsDir) => {
+        await assert.rejects(() => loadSkillCatalog(skillsDir), /skills.*array/i);
+      });
+    });
+  }
 });
 
 test('rejects duplicate skill IDs', async (t) => {
@@ -265,6 +271,8 @@ test('rejects a missing Markdown file', async (t) => {
 
 const invalidMetadataCases = [
   ['rejects an empty catalog', (manifest) => { manifest.skills = []; }, /exactly (?:6|six)/i],
+  ['rejects a five-skill catalog', (manifest) => { manifest.skills.pop(); }, /exactly (?:6|six)/i],
+  ['rejects a seven-skill catalog', (manifest) => { manifest.skills.push({ ...manifest.skills[0] }); }, /exactly (?:6|six)/i],
   ['rejects an unknown skill ID', (manifest) => { manifest.skills[0].id = 'unknown-skill'; }, /id/i],
   ['rejects an unsafe skill ID', (manifest) => { manifest.skills[0].id = '../escape'; }, /id/i],
   ['rejects a missing skill name', (manifest) => { delete manifest.skills[0].name; }, /name/i],
@@ -345,5 +353,175 @@ test('rejects Markdown quality criteria that disagree with metadata', async (t) 
     const content = readFileSync(path, 'utf8').replace('- Only planned targets change.', '- Anything may change.');
     writeFileSync(path, content);
     await assert.rejects(() => loadSkillCatalog(skillsDir), /qualityCriteria/i);
+  });
+});
+
+test('rejects non-object skill entries through manifest validation', async (t) => {
+  for (const [name, entry] of [['null', null], ['string', 'not an object'], ['array', []]]) {
+    await t.test(name, async (t) => {
+      const manifest = createValidManifest();
+      manifest.skills[2] = entry;
+      await withFixture(t, { manifest }, async (skillsDir) => {
+        await assert.rejects(() => loadSkillCatalog(skillsDir), /skills\[2\] must be an object/i);
+      });
+    });
+  }
+});
+
+test('rejects out-of-order skill IDs', async (t) => {
+  const manifest = createValidManifest();
+  [manifest.skills[0], manifest.skills[1]] = [manifest.skills[1], manifest.skills[0]];
+  await withFixture(t, { manifest }, async (skillsDir) => {
+    await assert.rejects(() => loadSkillCatalog(skillsDir), /out of order/i);
+  });
+});
+
+const additionalInvalidMetadataCases = [
+  ['rejects a missing summary', (manifest) => { delete manifest.skills[0].summary; }, /summary/i],
+  ['rejects an empty summary', (manifest) => { manifest.skills[0].summary = ''; }, /summary/i],
+  ['rejects a multi-sentence summary', (manifest) => { manifest.skills[0].summary = 'First sentence. Second sentence.'; }, /summary/i],
+  ['rejects an empty trigger', (manifest) => { manifest.skills[0].triggers[0] = ''; }, /triggers/i],
+  ['rejects a duplicate trigger', (manifest) => { manifest.skills[0].triggers[1] = manifest.skills[0].triggers[0]; }, /triggers/i],
+  ['rejects a non-string trigger', (manifest) => { manifest.skills[0].triggers[0] = 42; }, /triggers/i],
+  ['rejects missing preconditions', (manifest) => { delete manifest.skills[0].preconditions; }, /preconditions/i],
+  ['rejects a precondition list without the open-document requirement', (manifest) => { manifest.skills[0].preconditions = ['Targets are identifiable.']; }, /open in InDesign/i],
+  ['rejects a tool listed as both allowed and forbidden', (manifest) => { manifest.skills[0].forbiddenTools.push('rollback_edit'); }, /forbidden tools cannot be allowed.*rollback_edit/i],
+];
+
+for (const [name, mutate, expectedError] of additionalInvalidMetadataCases) {
+  test(name, async (t) => {
+    const manifest = createValidManifest();
+    mutate(manifest);
+    await withFixture(t, { manifest }, async (skillsDir) => {
+      await assert.rejects(() => loadSkillCatalog(skillsDir), expectedError);
+    });
+  });
+}
+
+test('rejects Markdown that omits the manifest summary', async (t) => {
+  await withFixture(t, {}, async (skillsDir) => {
+    const manifest = createValidManifest();
+    const path = join(skillsDir, 'safe-layout-edit.md');
+    writeFileSync(path, readFileSync(path, 'utf8').replace(manifest.skills[0].summary, 'A different purpose.'));
+    await assert.rejects(() => loadSkillCatalog(skillsDir), /When to use.*summary/i);
+  });
+});
+
+test('rejects Markdown that omits the first manifest example', async (t) => {
+  await withFixture(t, {}, async (skillsDir) => {
+    const manifest = createValidManifest();
+    const path = join(skillsDir, 'safe-layout-edit.md');
+    writeFileSync(path, readFileSync(path, 'utf8').replace(manifest.skills[0].examples[0], 'A different request.'));
+    await assert.rejects(() => loadSkillCatalog(skillsDir), /example request.*first manifest example/i);
+  });
+});
+
+test('rejects a workflow missing any core tool reference', async (t) => {
+  for (const tool of ['inspect_layout', 'plan_edit', 'apply_edit_plan', 'verify_layout', 'rollback_edit']) {
+    await t.test(tool, async (t) => {
+      await withFixture(t, {}, async (skillsDir) => {
+        const path = join(skillsDir, 'safe-layout-edit.md');
+        writeFileSync(path, readFileSync(path, 'utf8').replace(`\`${tool}\``, tool));
+        await assert.rejects(() => loadSkillCatalog(skillsDir), new RegExp(`workflow.*reference.*${tool}`));
+      });
+    });
+  }
+});
+
+test('rejects unapproved and forbidden backticked tool references anywhere in Markdown', async (t) => {
+  const cases = [
+    ['an unapproved but valid tool', 'save_document', /save_document.*allowed|not.*allowed/i],
+    ['a forbidden tool', 'execute_indesign_code', /execute_indesign_code.*allowed|not.*allowed/i],
+    ['an unknown snake_case tool name', 'not_a_real_tool', /not_a_real_tool.*allowed|not.*allowed/i],
+  ];
+  for (const [name, tool, expectedError] of cases) {
+    await t.test(name, async (t) => {
+      await withFixture(t, {}, async (skillsDir) => {
+        const path = join(skillsDir, 'safe-layout-edit.md');
+        const content = readFileSync(path, 'utf8').replace(
+          'Use it when the request identifies existing content that needs a controlled edit.',
+          `Use it when the request identifies existing content that needs a controlled edit. Avoid \`${tool}\`.`,
+        );
+        writeFileSync(path, content);
+        await assert.rejects(() => loadSkillCatalog(skillsDir), expectedError);
+      });
+    });
+  }
+});
+
+test('allows approved tool references and ordinary backticked prose', async (t) => {
+  await withFixture(t, {}, async (skillsDir) => {
+    const path = join(skillsDir, 'safe-layout-edit.md');
+    const content = readFileSync(path, 'utf8').replace(
+      'Use it when the request identifies existing content that needs a controlled edit.',
+      'Use it when the request identifies `existing content`, `page 1`, or `safe-layout-edit` that needs a controlled edit.',
+    );
+    writeFileSync(path, content);
+    const skills = await loadSkillCatalog(skillsDir);
+    assert.equal(skills.length, 6);
+  });
+});
+
+test('isolates cached catalog definitions from caller mutation', async () => {
+  const first = await loadSkillCatalog();
+  const second = await loadSkillCatalog();
+  assert.notEqual(first, second);
+  assert.notEqual(first[0], second[0]);
+  for (const field of ['triggers', 'examples', 'preconditions', 'allowedTools', 'forbiddenTools', 'qualityCriteria']) {
+    assert.notEqual(first[0][field], second[0][field]);
+  }
+
+  first.push({ id: 'injected-skill' });
+  first[0].id = 'mutated-skill';
+  first[0].summary = 'Mutated summary.';
+  first[0].allowedTools.push('execute_indesign_code');
+  first[0].triggers.push('Mutated trigger');
+  first[0].qualityCriteria[0] = 'Mutated criterion';
+
+  const fresh = await loadSkillCatalog();
+  assert.deepEqual(fresh.map((skill) => skill.id), EXPECTED_SKILLS.map((skill) => skill.id));
+  assert.equal(fresh[0].summary, 'Makes precise, reversible changes to an existing InDesign layout without disturbing unrelated content.');
+  assert.deepEqual(fresh[0].allowedTools, EXPECTED_SKILLS[0].allowedTools);
+  assert.equal(fresh[0].triggers.length, 2);
+  assert.deepEqual(fresh[0].qualityCriteria, EXPECTED_SKILLS[0].qualityCriteria);
+});
+
+test('isolates getSkill results from caller mutation', async () => {
+  const first = await getSkill('safe-layout-edit');
+  const second = await getSkill('safe-layout-edit');
+  assert.notEqual(first, second);
+  first.allowedTools.push('execute_indesign_code');
+  first.preconditions[0] = 'A document is closed.';
+  first.content = 'Replaced instructions';
+
+  const fresh = await getSkill('safe-layout-edit');
+  assert.deepEqual(fresh.allowedTools, EXPECTED_SKILLS[0].allowedTools);
+  assert.equal(fresh.preconditions[0], OPEN_DOCUMENT);
+  assert.match(fresh.content, /^# Safe Layout Edit/);
+});
+
+test('isolates listSkills summaries from caller mutation', async () => {
+  const first = await listSkills();
+  const second = await listSkills();
+  assert.notEqual(first, second);
+  assert.notEqual(first[0], second[0]);
+  first[0].allowedTools.push('execute_indesign_code');
+  first[0].examples[0] = 'Mutated example';
+  first.pop();
+
+  const fresh = await listSkills();
+  assert.deepEqual(fresh.map((skill) => skill.id), EXPECTED_SKILLS.map((skill) => skill.id));
+  assert.deepEqual(fresh[0].allowedTools, EXPECTED_SKILLS[0].allowedTools);
+  assert.equal(fresh[0].examples[0], 'Move the title down 8 millimeters, keep it inside the margin, and make sure the body text still fits.');
+});
+
+test('isolates custom catalog results from caller mutation', async (t) => {
+  await withFixture(t, {}, async (skillsDir) => {
+    const first = await loadSkillCatalog(skillsDir);
+    first[0].allowedTools.push('execute_indesign_code');
+    first[0].qualityCriteria[0] = 'Mutated criterion';
+    const fresh = await loadSkillCatalog(skillsDir);
+    assert.deepEqual(fresh[0].allowedTools, EXPECTED_SKILLS[0].allowedTools);
+    assert.deepEqual(fresh[0].qualityCriteria, EXPECTED_SKILLS[0].qualityCriteria);
   });
 });

@@ -250,6 +250,14 @@ function validateMarkdown(content, meta) {
       throw skillError(meta.id, `Markdown workflow must reference \`${tool}\`.`);
     }
   }
+
+  // MCP tool names use snake_case; other inline code remains ordinary prose.
+  for (const match of content.matchAll(/`([^`\r\n]+)`/g)) {
+    const reference = match[1];
+    if (/^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(reference) && !meta.allowedTools.includes(reference)) {
+      throw skillError(meta.id, `Markdown tool reference \`${reference}\` is not in allowedTools.`);
+    }
+  }
 }
 
 function toDefinition(meta, content) {
@@ -269,9 +277,21 @@ function toDefinition(meta, content) {
   };
 }
 
+function cloneDefinition(skill) {
+  return {
+    ...skill,
+    triggers: [...skill.triggers],
+    examples: [...skill.examples],
+    preconditions: [...skill.preconditions],
+    allowedTools: [...skill.allowedTools],
+    forbiddenTools: [...skill.forbiddenTools],
+    qualityCriteria: [...skill.qualityCriteria],
+  };
+}
+
 export async function loadSkillCatalog(skillsDir = DEFAULT_DIR) {
   const resolvedDir = resolve(skillsDir);
-  if (cache && resolvedDir === DEFAULT_DIR) return cache;
+  if (cache && resolvedDir === DEFAULT_DIR) return cache.map(cloneDefinition);
 
   const manifest = readManifest(resolvedDir);
   const ids = new Set();
@@ -289,7 +309,7 @@ export async function loadSkillCatalog(skillsDir = DEFAULT_DIR) {
     return toDefinition(meta, content);
   });
   if (resolvedDir === DEFAULT_DIR) cache = skills;
-  return skills;
+  return skills.map(cloneDefinition);
 }
 
 export async function getSkill(id) {
