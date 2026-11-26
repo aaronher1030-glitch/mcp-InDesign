@@ -1,0 +1,244 @@
+{
+  "skills": [
+    {
+      "id": "safe-layout-edit",
+      "name": "Safe Layout Edit",
+      "summary": "Makes precise, reversible changes to an existing InDesign layout without disturbing unrelated content.",
+      "version": "1.0.0",
+      "triggers": [
+        "Move, resize, or adjust an existing layout object",
+        "Change spacing or positioning while preserving the document design"
+      ],
+      "examples": [
+        "Move the title down 8 millimeters, keep it inside the margin, and make sure the body text still fits."
+      ],
+      "preconditions": [
+        "A document is open in InDesign.",
+        "The requested pages and targets can be identified from inspection output."
+      ],
+      "allowedTools": [
+        "inspect_layout",
+        "plan_edit",
+        "apply_edit_plan",
+        "verify_layout",
+        "rollback_edit"
+      ],
+      "forbiddenTools": [
+        "execute_indesign_code",
+        "close_document",
+        "print_book",
+        "package_document"
+      ],
+      "defaultRisk": "low",
+      "qualityCriteria": [
+        "Only planned targets change.",
+        "No new text overflow or out-of-bounds content appears.",
+        "No unintended style duplication occurs.",
+        "Structural and visual results are reported separately."
+      ]
+    },
+    {
+      "id": "text-typography-edit",
+      "name": "Text Typography Edit",
+      "summary": "Edits InDesign text and typography while preserving readability, hierarchy, and reusable styles.",
+      "version": "1.0.0",
+      "triggers": [
+        "Revise text in an existing text frame",
+        "Adjust typography, leading, alignment, or paragraph and character styles"
+      ],
+      "examples": [
+        "Set the subheads to the existing Heading 2 style and adjust leading so no line becomes overset."
+      ],
+      "preconditions": [
+        "A document is open in InDesign.",
+        "The requested pages and targets can be identified from inspection output."
+      ],
+      "allowedTools": [
+        "inspect_layout",
+        "plan_edit",
+        "apply_edit_plan",
+        "verify_layout",
+        "rollback_edit",
+        "edit_text_frame",
+        "apply_paragraph_style",
+        "apply_character_style",
+        "create_paragraph_style",
+        "create_character_style"
+      ],
+      "forbiddenTools": [
+        "execute_indesign_code",
+        "close_document",
+        "print_book",
+        "package_document"
+      ],
+      "defaultRisk": "low",
+      "qualityCriteria": [
+        "No overset text remains.",
+        "The typography hierarchy remains clear.",
+        "Leading and alignment are consistent across edited text.",
+        "Existing styles are reused when suitable."
+      ]
+    },
+    {
+      "id": "align-distribute",
+      "name": "Align Distribute",
+      "summary": "Aligns and distributes selected InDesign page items against a stated margin, grid, or neighbor.",
+      "version": "1.0.0",
+      "triggers": [
+        "Align page items to a margin, grid, or neighboring object",
+        "Distribute objects with equal gaps or consistent spacing"
+      ],
+      "examples": [
+        "Distribute the three product cards evenly between the left and right margins with 6 millimeter gaps."
+      ],
+      "preconditions": [
+        "A document is open in InDesign.",
+        "The requested pages and targets can be identified from inspection output."
+      ],
+      "allowedTools": [
+        "inspect_layout",
+        "plan_edit",
+        "apply_edit_plan",
+        "verify_layout",
+        "rollback_edit",
+        "move_page_item",
+        "resize_page_item",
+        "set_page_item_properties"
+      ],
+      "forbiddenTools": [
+        "execute_indesign_code",
+        "close_document",
+        "print_book",
+        "package_document"
+      ],
+      "defaultRisk": "low",
+      "qualityCriteria": [
+        "Gaps are equal within the plan tolerance.",
+        "Items align to the chosen margin, grid, or neighbor.",
+        "No item leaves the page unexpectedly."
+      ]
+    },
+    {
+      "id": "image-reframe",
+      "name": "Image Reframe",
+      "summary": "Reframes and crops placed InDesign images while preserving links, resolution, and planned bounds.",
+      "version": "1.0.0",
+      "triggers": [
+        "Crop or reframe a placed image",
+        "Resize an image frame to fit a stated composition or aspect ratio"
+      ],
+      "examples": [
+        "Reframe the portrait to a 4:5 crop, keep the subject's face visible, and keep the frame inside the column."
+      ],
+      "preconditions": [
+        "A document is open in InDesign.",
+        "The requested pages and targets can be identified from inspection output."
+      ],
+      "allowedTools": [
+        "inspect_layout",
+        "plan_edit",
+        "apply_edit_plan",
+        "verify_layout",
+        "rollback_edit",
+        "resize_page_item",
+        "set_page_item_properties",
+        "get_image_info"
+      ],
+      "forbiddenTools": [
+        "execute_indesign_code",
+        "close_document",
+        "print_book",
+        "package_document"
+      ],
+      "defaultRisk": "low",
+      "qualityCriteria": [
+        "The aspect ratio follows the stated crop intent.",
+        "Effective resolution is acceptable for the intended output.",
+        "Image links remain valid.",
+        "The frame stays within the planned bounds."
+      ]
+    },
+    {
+      "id": "style-consistency",
+      "name": "Style Consistency",
+      "summary": "Applies existing InDesign styles and colors consistently without creating unnecessary duplicates.",
+      "version": "1.0.0",
+      "triggers": [
+        "Make paragraph, character, object, or color formatting consistent",
+        "Replace inconsistent local formatting with existing styles"
+      ],
+      "examples": [
+        "Apply the existing Body and Caption styles to the selected text and use the approved brand colors throughout."
+      ],
+      "preconditions": [
+        "A document is open in InDesign.",
+        "The requested pages and targets can be identified from inspection output."
+      ],
+      "allowedTools": [
+        "inspect_layout",
+        "plan_edit",
+        "apply_edit_plan",
+        "verify_layout",
+        "rollback_edit",
+        "list_styles",
+        "list_color_swatches",
+        "apply_paragraph_style",
+        "apply_character_style",
+        "apply_object_style",
+        "apply_color"
+      ],
+      "forbiddenTools": [
+        "execute_indesign_code",
+        "close_document",
+        "print_book",
+        "package_document"
+      ],
+      "defaultRisk": "low",
+      "qualityCriteria": [
+        "Existing styles and colors are preferred.",
+        "No duplicate styles are created without approval.",
+        "Typography remains consistent across all targets."
+      ]
+    },
+    {
+      "id": "multi-page-consistency",
+      "name": "Multi Page Consistency",
+      "summary": "Coordinates high-risk repeated InDesign changes across pages and spreads while protecting masters, folios, and unrelated content.",
+      "version": "1.0.0",
+      "triggers": [
+        "Apply the same change across multiple pages or spreads",
+        "Coordinate repeated elements, masters, or folios throughout a document"
+      ],
+      "examples": [
+        "Align the running headers on pages 2 through 12 and update the shared master without changing unrelated page content."
+      ],
+      "preconditions": [
+        "A document is open in InDesign.",
+        "The requested pages and targets can be identified from inspection output."
+      ],
+      "allowedTools": [
+        "inspect_layout",
+        "plan_edit",
+        "apply_edit_plan",
+        "verify_layout",
+        "rollback_edit",
+        "list_spreads",
+        "get_spread_info",
+        "apply_master_spread"
+      ],
+      "forbiddenTools": [
+        "execute_indesign_code",
+        "close_document",
+        "print_book",
+        "package_document"
+      ],
+      "defaultRisk": "high",
+      "qualityCriteria": [
+        "Repeated elements align across pages.",
+        "Masters and folios remain coherent.",
+        "No unrelated page changes occur.",
+        "Approval is always required."
+      ]
+    }
+  ]
+}
