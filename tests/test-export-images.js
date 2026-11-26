@@ -16,7 +16,7 @@ const JPEG_QUALITY = {
   MAXIMUM: 'MAXIMUM',
 };
 
-function mockInDesignBridge(t, options = {}) {
+function mockInDesignBridge(options = {}) {
   const pageCount = options.pageCount ?? 5;
   const calls = [];
   const exports = [];
@@ -55,7 +55,8 @@ function mockInDesignBridge(t, options = {}) {
     pngExportPreferences: { exportResolution: 96 },
   };
 
-  t.mock.method(ScriptExecutor, 'executeViaUXP', async (code) => {
+  const originalExecuteViaUXP = ScriptExecutor.executeViaUXP;
+  ScriptExecutor.executeViaUXP = async (code) => {
     calls.push(code);
     if (options.bridgeFailureAt === calls.length) throw new Error('Bridge unavailable');
     return runInNewContext(`(async () => {\n${code}\n})()`, {
@@ -68,15 +69,31 @@ function mockInDesignBridge(t, options = {}) {
         };
       },
     });
-  });
+  };
 
-  return { app, calls, exports };
+  return {
+    app,
+    calls,
+    exports,
+    restore() {
+      ScriptExecutor.executeViaUXP = originalExecuteViaUXP;
+    },
+  };
 }
 
-function temporaryOutputDirectory(t) {
+async function withExportFixture(options, run) {
   const outputPath = mkdtempSync(join(tmpdir(), 'indesign-export-images-'));
-  t.after(() => rmSync(outputPath, { recursive: true, force: true }));
-  return outputPath;
+  const bridge = mockInDesignBridge(options);
+  try {
+    return await run({ outputPath, ...bridge });
+  } finally {
+    bridge.restore();
+    rmSync(outputPath, { recursive: true, force: true });
+  }
+}
+
+function exportTest(name, options, run) {
+  test(name, async () => withExportFixture(options, run));
 }
 
 test('parses all, single pages, lists, and inclusive ranges', () => {
@@ -100,9 +117,7 @@ test('export_images schema matches handler arguments', () => {
   assert.equal(definition.inputSchema.required[0], 'outputPath');
 });
 
-test('export_images applies JPEG preferences and restores them after export', async (t) => {
-  const outputPath = temporaryOutputDirectory(t);
-  const { app, calls, exports } = mockInDesignBridge(t);
+exportTest('export_images applies JPEG preferences and restores them after export', {}, async ({ outputPath, app, calls, exports }) => {
 
   const response = await ExportHandlers.exportImages({
     outputPath,
@@ -135,9 +150,7 @@ test('export_images applies JPEG preferences and restores them after export', as
   }
 });
 
-test('export_images maps the JPEG quality range to InDesign quality levels', async (t) => {
-  const outputPath = temporaryOutputDirectory(t);
-  const { app, exports } = mockInDesignBridge(t);
+exportTest('export_images maps the JPEG quality range to InDesign quality levels', {}, async ({ outputPath, app, exports }) => {
   const cases = [
     [1, JPEG_QUALITY.LOW],
     [25, JPEG_QUALITY.LOW],
@@ -161,9 +174,7 @@ test('export_images maps the JPEG quality range to InDesign quality levels', asy
   assert.deepEqual(exports.map(({ jpegQuality }) => jpegQuality), cases.map(([, level]) => level));
 });
 
-test('export_images applies default PNG resolution without changing JPEG quality', async (t) => {
-  const outputPath = temporaryOutputDirectory(t);
-  const { app, calls, exports } = mockInDesignBridge(t);
+exportTest('export_images applies default PNG resolution without changing JPEG quality', {}, async ({ outputPath, app, calls, exports }) => {
 
   const response = await ExportHandlers.exportImages({ outputPath, pages: '1' });
 
@@ -179,14 +190,12 @@ test('export_images applies default PNG resolution without changing JPEG quality
   });
 });
 
-test('export_images restores preferences when a page export fails', async (t) => {
-  const outputPath = temporaryOutputDirectory(t);
-  const { app, exports } = mockInDesignBridge(t, {
-    exportPage({ pageIndex, fileName }) {
-      if (pageIndex === 1) throw new Error('Disk full');
-      writeFileSync(fileName, 'first-image');
-    },
-  });
+exportTest('export_images restores preferences when a page export fails', {
+  exportPage({ pageIndex, fileName }) {
+    if (pageIndex === 1) throw new Error('Disk full');
+    writeFileSync(fileName, 'first-image');
+  },
+}, async ({ outputPath, app, exports }) => {
 
   const response = await ExportHandlers.exportImages({
     outputPath, format: 'JPEG', quality: 90, resolution: 240, pages: '1-2',
@@ -200,9 +209,7 @@ test('export_images restores preferences when a page export fails', async (t) =>
   assert.equal(app.jpegExportPreferences.jpegQuality, JPEG_QUALITY.LOW);
 });
 
-test('export_images restores resolution when applying JPEG quality fails', async (t) => {
-  const outputPath = temporaryOutputDirectory(t);
-  const { app } = mockInDesignBridge(t);
+exportTest('export_images restores resolution when applying JPEG quality fails', {}, async ({ outputPath, app }) => {
   Object.defineProperty(app.jpegExportPreferences, 'jpegQuality', {
     get: () => JPEG_QUALITY.LOW,
     set: () => { throw new Error('Quality is read-only'); },
@@ -218,9 +225,7 @@ test('export_images restores resolution when applying JPEG quality fails', async
   assert.equal(app.jpegExportPreferences.exportResolution, 72);
 });
 
-test('export_images rejects invalid pages before the export bridge call', async (t) => {
-  const outputPath = temporaryOutputDirectory(t);
-  const { calls, exports } = mockInDesignBridge(t, { pageCount: 3 });
+exportTest('export_images rejects invalid pages before the export bridge call', { pageCount: 3 }, async ({ outputPath, calls, exports }) => {
 
   const response = await ExportHandlers.exportImages({ outputPath, pages: '2-4' });
 
@@ -230,9 +235,7 @@ test('export_images rejects invalid pages before the export bridge call', async 
   assert.equal(exports.length, 0);
 });
 
-test('export_images reports no open document without a second bridge call', async (t) => {
-  const outputPath = temporaryOutputDirectory(t);
-  const { calls, exports } = mockInDesignBridge(t, { pageCount: 0 });
+exportTest('export_images reports no open document without a second bridge call', { pageCount: 0 }, async ({ outputPath, calls, exports }) => {
 
   const response = await ExportHandlers.exportImages({ outputPath });
 
@@ -244,9 +247,8 @@ test('export_images reports no open document without a second bridge call', asyn
 
 test('export_images requires every verified output to be a non-empty file', async (t) => {
   for (const failure of ['missing', 'empty', 'directory']) {
-    await t.test(failure, async (child) => {
-      const outputPath = temporaryOutputDirectory(child);
-      const { app } = mockInDesignBridge(child, {
+    await t.test(failure, async () => {
+      await withExportFixture({
         exportPage({ pageIndex, fileName }) {
           if (pageIndex === 0) {
             writeFileSync(fileName, 'first-image');
@@ -256,20 +258,18 @@ test('export_images requires every verified output to be a non-empty file', asyn
             mkdirSync(fileName);
           }
         },
+      }, async ({ outputPath, app }) => {
+        const response = await ExportHandlers.exportImages({ outputPath, pages: '1-2' });
+
+        assert.equal(response.success, false);
+        assert.match(response.result, /page_2\.png/);
+        assert.equal(app.pngExportPreferences.exportResolution, 96);
       });
-
-      const response = await ExportHandlers.exportImages({ outputPath, pages: '1-2' });
-
-      assert.equal(response.success, false);
-      assert.match(response.result, /page_2\.png/);
-      assert.equal(app.pngExportPreferences.exportResolution, 96);
     });
   }
 });
 
-test('export_images surfaces bridge rejections', async (t) => {
-  const outputPath = temporaryOutputDirectory(t);
-  mockInDesignBridge(t, { bridgeFailureAt: 1 });
+exportTest('export_images surfaces bridge rejections', { bridgeFailureAt: 1 }, async ({ outputPath }) => {
 
   await assert.rejects(
     ExportHandlers.exportImages({ outputPath }),
