@@ -53,30 +53,40 @@ export class DocumentHandlers {
             const { MeasurementUnits } = require('indesign');
             const savedH = doc.viewPreferences.horizontalMeasurementUnits;
             const savedV = doc.viewPreferences.verticalMeasurementUnits;
-            doc.viewPreferences.horizontalMeasurementUnits = MeasurementUnits.millimeters;
-            doc.viewPreferences.verticalMeasurementUnits   = MeasurementUnits.millimeters;
-            const info = {
-                name: doc.name,
-                filePath,
-                pages: doc.pages.length,
-                spreads: doc.spreads.length,
-                layers: doc.layers.length,
-                masterSpreads: doc.masterSpreads.length,
-                width: doc.documentPreferences.pageWidth,
-                height: doc.documentPreferences.pageHeight,
-                facingPages: doc.documentPreferences.facingPages,
-                bleedTop: doc.documentPreferences.documentBleedTopOffset,
-                bleedBottom: doc.documentPreferences.documentBleedBottomOffset,
-                bleedInside: doc.documentPreferences.documentBleedInsideOrLeftOffset,
-                bleedOutside: doc.documentPreferences.documentBleedOutsideOrRightOffset,
-                marginTop: doc.marginPreferences.top,
-                marginBottom: doc.marginPreferences.bottom,
-                marginLeft: doc.marginPreferences.left,
-                marginRight: doc.marginPreferences.right
-            };
-            doc.viewPreferences.horizontalMeasurementUnits = savedH;
-            doc.viewPreferences.verticalMeasurementUnits   = savedV;
-            return info;
+            try {
+                doc.viewPreferences.horizontalMeasurementUnits = MeasurementUnits.millimeters;
+                doc.viewPreferences.verticalMeasurementUnits   = MeasurementUnits.millimeters;
+                const info = {
+                    name: doc.name,
+                    filePath,
+                    saved: doc.saved,
+                    modified: doc.modified,
+                    pages: doc.pages.length,
+                    spreads: doc.spreads.length,
+                    layers: doc.layers.length,
+                    masterSpreads: doc.masterSpreads.length,
+                    width: doc.documentPreferences.pageWidth,
+                    height: doc.documentPreferences.pageHeight,
+                    facingPages: doc.documentPreferences.facingPages,
+                    bleedTop: doc.documentPreferences.documentBleedTopOffset,
+                    bleedBottom: doc.documentPreferences.documentBleedBottomOffset,
+                    bleedInside: doc.documentPreferences.documentBleedInsideOrLeftOffset,
+                    bleedOutside: doc.documentPreferences.documentBleedOutsideOrRightOffset,
+                    marginTop: doc.marginPreferences.top,
+                    marginBottom: doc.marginPreferences.bottom,
+                    marginLeft: doc.marginPreferences.left,
+                    marginRight: doc.marginPreferences.right
+                };
+                return info;
+            } finally {
+                // Restore both axes even if a dimension/preferences getter throws
+                // (or restoring the horizontal axis itself fails).
+                try {
+                    doc.viewPreferences.horizontalMeasurementUnits = savedH;
+                } finally {
+                    doc.viewPreferences.verticalMeasurementUnits = savedV;
+                }
+            }
         `);
 
         if (result?.error) {
@@ -1202,7 +1212,7 @@ export class DocumentHandlers {
     /**
      * Validate document structure and content
      */
-    static async validateDocument(args) {
+    static async validateDocument(args = {}) {
         const { checkLinks = true, checkFonts = true, checkImages = true, checkStyles = false } = args;
 
         const code = `
@@ -1210,27 +1220,105 @@ export class DocumentHandlers {
                 return { success: false, error: 'No document open' };
             }
             const doc = app.activeDocument;
+            const { FontStatus, LinkStatus } = require('indesign');
             const issues = [];
+            const links = [];
+            const missingLinks = [];
+            const fonts = [];
+            const missingFonts = [];
+            const linkInspection = { status: 'unknown', reason: 'Link checks were not requested' };
+            const fontInspection = { status: 'unknown', reason: 'Font checks were not requested' };
+            const safeGet = (fn, fallback = null) => { try { return fn(); } catch (e) { return fallback; } };
+            const enumName = (value, enumType) => {
+                if (value === undefined || value === null) return null;
+                const text = String(value).toUpperCase();
+                for (const key of Object.keys(enumType || {})) {
+                    const candidate = enumType[key];
+                    if (value === candidate) return key;
+                    if (typeof value.equals === 'function') {
+                        try { if (value.equals(candidate)) return key; } catch (e) {}
+                    }
+                    if (text === key || (typeof candidate === 'number' && Number(value) === candidate)) return key;
+                }
+                return text || null;
+            };
             let isValid = true;
             if (${checkLinks}) {
-                for (let i = 0; i < doc.links.length; i++) {
-                    const link = doc.links.item(i);
-                    if (!link.isValid) {
-                        issues.push('Broken link: ' + link.name);
-                        isValid = false;
+                try {
+                    linkInspection.status = 'known';
+                    for (let i = 0; i < doc.links.length; i++) {
+                        const link = doc.links.item(i);
+                        const name = safeGet(() => link.name, 'Link at index ' + i);
+                        const linkValid = safeGet(() => link.isValid);
+                        const rawStatus = enumName(safeGet(() => link.status), LinkStatus);
+                        let status = rawStatus;
+                        if (status === 'LINK_MISSING' || status === 'LINK_INACCESSIBLE') status = 'MISSING';
+                        else if (status === 'LINK_OUT_OF_DATE') status = 'OUT_OF_DATE';
+                        else if (status === 'LINK_EMBEDDED') status = 'EMBEDDED';
+                        else if (status !== 'NORMAL' && status !== 'MISSING') status = 'UNKNOWN';
+                        links.push({
+                            id: safeGet(() => link.id),
+                            name,
+                            path: safeGet(() => link.filePath ? (link.filePath.nativePath || link.filePath.url || String(link.filePath)) : null),
+                            status,
+                            isValid: linkValid
+                        });
+                        if (status === 'MISSING' || linkValid === false) {
+                            missingLinks.push(name);
+                            issues.push('Broken link: ' + name);
+                            isValid = false;
+                        }
+                        // isValid only proves that the object specifier resolves;
+                        // Link.status is the API that reports a missing source file.
+                        if (status === 'UNKNOWN' || linkValid !== true) {
+                            linkInspection.status = 'unknown';
+                            linkInspection.reason = 'Link status or object validity is unavailable';
+                            isValid = false;
+                        }
                     }
+                } catch (e) {
+                    linkInspection.status = 'unknown';
+                    linkInspection.reason = e.message;
+                    isValid = false;
                 }
             }
             if (${checkFonts}) {
-                for (let i = 0; i < doc.fonts.length; i++) {
-                    const font = doc.fonts.item(i);
-                    if (!font.isValid) {
-                        issues.push('Missing font: ' + font.name);
-                        isValid = false;
+                try {
+                    fontInspection.status = 'known';
+                    for (let i = 0; i < doc.fonts.length; i++) {
+                        const font = doc.fonts.item(i);
+                        const name = safeGet(() => font.name, 'Font at index ' + i);
+                        const rawStatus = safeGet(() => font.status);
+                        const normalizedStatus = enumName(rawStatus, FontStatus);
+                        const recognized = ['INSTALLED', 'NOT_AVAILABLE', 'FAUXED', 'SUBSTITUTED', 'UNKNOWN', 'MISSING'];
+                        const status = recognized.includes(normalizedStatus) ? normalizedStatus : 'UNKNOWN';
+                        const fontValid = safeGet(() => font.isValid);
+                        fonts.push({
+                            name,
+                            fullName: safeGet(() => font.fullName),
+                            postscriptName: safeGet(() => font.postscriptName),
+                            status,
+                            isValid: fontValid
+                        });
+                        const missing = status === 'NOT_AVAILABLE' || status === 'SUBSTITUTED' || status === 'MISSING';
+                        if (missing) {
+                            missingFonts.push(name);
+                            issues.push('Missing font: ' + name);
+                            isValid = false;
+                        }
+                        if (status === 'UNKNOWN' || fontValid !== true) {
+                            fontInspection.status = 'unknown';
+                            fontInspection.reason = 'Font status or object validity is unavailable';
+                            isValid = false;
+                        }
                     }
+                } catch (e) {
+                    fontInspection.status = 'unknown';
+                    fontInspection.reason = e.message;
+                    isValid = false;
                 }
             }
-            return { success: true, isValid, issues };
+            return { success: true, isValid, issues, links, missingLinks, linkInspection, fonts, missingFonts, fontInspection };
         `;
 
         const result = await ScriptExecutor.executeViaUXP(code);

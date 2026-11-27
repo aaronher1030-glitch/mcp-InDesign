@@ -8,12 +8,17 @@ import {
   targetFingerprint,
   validatePlan,
 } from '../src/skills/planSchema.js';
+import { buildInverse } from '../src/skills/editJournal.js';
+import { allToolDefinitions } from '../src/types/index.js';
 
 const inspection = {
   inspectionId: 'inspection-1',
   baseRevision: 7,
   document: { name: 'Brief', filePath: 'C:/docs/brief.indd', pages: 2 },
-  pages: [{ index: 0, items: [] }],
+  pages: [
+    { index: 0, items: Array.from({ length: 6 }, (_, index) => ({ index, name: `Item ${index}`, geometricBounds: [0, 0, 20, 20] })) },
+    { index: 1, items: Array.from({ length: 6 }, (_, index) => ({ index, name: `Item ${index}`, geometricBounds: [0, 0, 20, 20] })) },
+  ],
 };
 
 function plan(steps = [{ toolName: 'move_page_item', arguments: { x: 10, y: 20 } }]) {
@@ -88,7 +93,7 @@ test('uses the inspection fingerprint and defaults missing units to points', () 
 
 test('accepts the brief inspection fixture without optional inspection metadata', () => {
   const value = normalizePlanInput({
-    inspection: { document: { name: 'Brief', filePath: 'C:/docs/brief.indd', pages: 2 }, pages: [{ index: 0, items: [] }] },
+    inspection: { document: { name: 'Brief', filePath: 'C:/docs/brief.indd', pages: 2 }, pages: [inspection.pages[0]] },
     skillId: 'align-distribute',
     plan: plan(),
     now: new Date('2026-11-25T12:00:00.000Z'),
@@ -186,23 +191,50 @@ test('enforces the five-target and one-page low-risk boundaries', () => {
   assert.equal(classifyPlanRisk(normalize({ plan: noPages })), 'high');
 });
 
-test('every low-risk allowlisted operation can normalize and validate', () => {
+test('every low-risk allowlisted operation can normalize and validate from its before-state', () => {
   const cases = [
-    ['move_page_item', { x: 1, y: 2 }],
-    ['resize_page_item', { width: 10, height: 20 }],
-    ['set_page_item_properties', { fillColor: 'Red' }],
-    ['edit_text_frame', { frameIndex: 0, content: 'Title' }],
-    ['apply_paragraph_style', { frameIndex: 0, styleName: 'Body' }],
-    ['apply_character_style', { frameIndex: 0, styleName: 'Body' }],
-    ['apply_object_style', { itemIndex: 0, styleName: 'Card' }],
-    ['apply_color', { objectIndex: 0, colorName: 'Red' }],
+    ['move_page_item', { x: 1, y: 2 }, { geometricBounds: [0, 0, 20, 20] }],
+    ['resize_page_item', { width: 10, height: 20 }, { geometricBounds: [0, 0, 20, 20] }],
+    ['set_page_item_properties', { fillColor: 'Red' }, { fillColor: 'Black' }],
+    ['edit_text_frame', { frameIndex: 0, content: 'Title' }, { text: 'Previous title' }],
+    ['apply_paragraph_style', { frameIndex: 0, styleName: 'Body' }, { paragraphStyle: 'Body Old' }],
+    ['apply_character_style', { frameIndex: 0, styleName: 'Body' }, { characterStyle: 'Body Old' }],
+    ['apply_object_style', { itemIndex: 0, styleName: 'Card' }, { objectStyle: 'Card Old' }],
+    ['apply_color', { objectIndex: 0, colorName: 'Red' }, { fillColor: 'Black' }],
   ];
-  for (const [toolName, args] of cases) {
-    const value = normalize({ plan: plan([{ toolName, arguments: args }]) });
+  for (const [toolName, args, before] of cases) {
+    const input = plan([{ toolName, arguments: args }]);
+    input.targets = [{ pageIndex: 0, itemIndex: 0, before }];
+    const value = normalize({ plan: input });
     assert.equal(value.steps[0].reversible, true, toolName);
     assert.equal(value.steps[0].risk, 'low', toolName);
     assert.equal(classifyPlanRisk(value), 'low', toolName);
     assert.equal(validatePlan(value).valid, true, toolName);
+  }
+});
+
+test('a step without a usable before-state can never be low risk', () => {
+  const cases = [
+    ['move_page_item', { x: 1, y: 2 }, { name: 'Title' }],
+    ['resize_page_item', { width: 10, height: 20 }, { name: 'Title' }],
+    ['set_page_item_properties', { fillColor: 'Red' }, { geometricBounds: [0, 0, 20, 20] }],
+    ['edit_text_frame', { frameIndex: 0, content: 'Title' }, { geometricBounds: [0, 0, 20, 20] }],
+    ['apply_paragraph_style', { frameIndex: 0, styleName: 'Body' }, { geometricBounds: [0, 0, 20, 20] }],
+    ['apply_character_style', { frameIndex: 0, styleName: 'Body' }, { geometricBounds: [0, 0, 20, 20] }],
+    ['apply_object_style', { itemIndex: 0, styleName: 'Card' }, { geometricBounds: [0, 0, 20, 20] }],
+    ['apply_color', { objectIndex: 0, colorName: 'Red' }, { geometricBounds: [0, 0, 20, 20] }],
+  ];
+  for (const [toolName, args, before] of cases) {
+    const input = plan([{ toolName, arguments: args }]);
+    input.targets = [{ pageIndex: 0, itemIndex: 0, before }];
+    const value = normalize({
+      plan: input,
+      inspection: { ...inspection, pages: [{ index: 0, items: [{ index: 0, name: 'Title' }] }] },
+    });
+    assert.equal(value.steps[0].reversible, false, toolName);
+    assert.equal(value.steps[0].risk, 'high', toolName);
+    assert.equal(value.risk, 'high', toolName);
+    assert.equal(value.status, 'approval_required', toolName);
   }
 });
 
@@ -406,7 +438,6 @@ test('all supplied target selectors must resolve to the same target', () => {
   assert.throws(() => normalize({ plan: input }), TypeError);
 
   input.steps[0].targetId = 'target-a';
-  input.steps[0].targetFingerprint = targetFingerprint(input.targets[0]);
   const value = normalize({ plan: input });
   assert.equal(value.steps[0].targetFingerprint, value.targets[0].fingerprint);
   assert.deepEqual(value.steps[0].arguments, { pageIndex: 0, itemIndex: 0, x: 1, y: 2 });
@@ -520,12 +551,94 @@ test('apply_color normalizes to the selected page and allPageItems object index'
     targetIndex: 0,
     arguments: { colorName: 'Red', colorType: 'STROKE' },
   }]);
-  input.targets = [{ pageIndex: 2, itemIndex: 3, before: {} }];
+  input.targets = [{ pageIndex: 2, itemIndex: 3, before: { strokeColor: 'Black' } }];
   input.affectedPages = [2];
-  const value = normalize({ plan: input });
+  const value = normalize({
+    plan: input,
+    inspection: { ...inspection, pages: [...inspection.pages, { index: 2, items: [{ index: 3, geometricBounds: [0, 0, 20, 20] }] }] },
+  });
   assert.deepEqual(value.steps[0].arguments, { pageIndex: 2, objectIndex: 3, colorName: 'Red', colorType: 'STROKE' });
   assert.equal(value.risk, 'low');
   assert.equal(validatePlan(value).valid, true);
+});
+
+test('binds text-frame indices within textFrames instead of copying allPageItems indices', () => {
+  const mixedInspection = {
+    ...inspection,
+    pages: [{
+      index: 0,
+      items: [
+        { index: 0, type: 'Rectangle', name: 'Background', geometricBounds: [0, 0, 20, 20] },
+        { index: 1, type: 'TextFrame', name: 'TextA', contents: 'Old A', geometricBounds: [0, 0, 20, 20] },
+        { index: 2, type: 'TextFrame', name: 'TextB', contents: 'Old B', geometricBounds: [0, 0, 20, 20] },
+      ],
+    }],
+  };
+  const input = plan([{
+    toolName: 'edit_text_frame',
+    targetIndex: 0,
+    arguments: { content: 'New A' },
+  }]);
+  input.targets = [{ pageIndex: 0, itemIndex: 1, name: 'TextA', before: { contents: 'Old A' } }];
+  const value = normalize({ inspection: mixedInspection, plan: input });
+  assert.equal(value.steps[0].arguments.frameIndex, 0);
+  assert.equal(value.targets[0].itemIndex, 1);
+  assert.equal(value.steps[0].targetFingerprint, value.targets[0].fingerprint);
+  assert.equal(value.risk, 'low');
+  assert.equal(validatePlan(value).valid, true);
+
+  const conflicting = structuredClone(input);
+  conflicting.steps[0].arguments.frameIndex = 1;
+  assert.throws(() => normalize({ inspection: mixedInspection, plan: conflicting }), /frameIndex/);
+});
+
+test('binds object style and color selectors to their distinct page-item collections', () => {
+  const mixedInspection = {
+    ...inspection,
+    pages: [{
+      index: 0,
+      items: [
+        { index: 0, type: 'Oval', name: 'Ellipse', geometricBounds: [0, 0, 20, 20] },
+        { index: 1, type: 'Rectangle', name: 'Card', geometricBounds: [0, 0, 20, 20] },
+        { index: 2, type: 'TextFrame', name: 'TextA', contents: 'A', geometricBounds: [0, 0, 20, 20] },
+        { index: 3, type: 'TextFrame', name: 'TextB', contents: 'B', geometricBounds: [0, 0, 20, 20] },
+      ],
+    }],
+  };
+  const input = plan([
+    { toolName: 'apply_object_style', targetIndex: 0, arguments: { itemType: 'rectangle', styleName: 'Card' } },
+    { toolName: 'apply_color', targetIndex: 1, arguments: { colorName: 'Red' } },
+  ]);
+  input.targets = [
+    { pageIndex: 0, itemIndex: 1, before: { objectStyle: 'Old' } },
+    { pageIndex: 0, itemIndex: 3, before: { fillColor: 'Black' } },
+  ];
+  const value = normalize({ inspection: mixedInspection, plan: input });
+  assert.equal(value.steps[0].arguments.itemIndex, 0);
+  assert.equal(value.steps[1].arguments.objectIndex, 3);
+  assert.equal(value.steps[0].targetFingerprint, value.targets[0].fingerprint);
+  assert.equal(value.steps[1].targetFingerprint, value.targets[1].fingerprint);
+  assert.equal(validatePlan(value).valid, true);
+});
+
+test('infers object-style itemType and rejects a conflicting typed selector', () => {
+  const typedInspection = {
+    ...inspection,
+    pages: [{ index: 0, items: [
+      { index: 0, type: 'Rectangle', name: 'Background', geometricBounds: [0, 0, 20, 20] },
+      { index: 1, type: 'Oval', name: 'Badge', geometricBounds: [0, 0, 20, 20] },
+    ] }],
+  };
+  const input = plan([{ toolName: 'apply_object_style', targetIndex: 0, arguments: { styleName: 'Card' } }]);
+  input.targets = [{ pageIndex: 0, itemIndex: 1, before: { objectStyle: 'Old' } }];
+  const value = normalize({ inspection: typedInspection, plan: input });
+  assert.equal(value.steps[0].arguments.itemIndex, 0);
+  assert.equal(value.steps[0].arguments.itemType, 'ellipse');
+  assert.equal(validatePlan(value).valid, true, validatePlan(value).errors.join('; '));
+
+  const conflicting = structuredClone(input);
+  conflicting.steps[0].arguments.itemType = 'rectangle';
+  assert.throws(() => normalize({ inspection: typedInspection, plan: conflicting }), /itemType/);
 });
 
 test('classification independently rejects malformed or contradictory hand-built plans', () => {
@@ -550,6 +663,80 @@ test('classification independently rejects malformed or contradictory hand-built
     { ...valid, steps: [{ ...valid.steps[0], reversible: 'true' }] },
   ];
   for (const malformed of cases) assert.equal(classifyPlanRisk(malformed), 'high');
+});
+
+test('binds target before-state to the inspected item instead of fabricated bounds', () => {
+  const input = plan();
+  input.targets[0].before.geometricBounds = [999, 999, 1000, 1000];
+  const value = normalize({
+    inspection: {
+      ...inspection,
+      pages: [{ index: 0, items: [{ index: 0, name: 'Actual title', geometricBounds: [0, 0, 20, 20] }] }],
+    },
+    plan: input,
+  });
+  assert.deepEqual(value.targets[0].before.geometricBounds, [0, 0, 20, 20]);
+  assert.equal(value.targets[0].name, 'Actual title');
+  assert.equal(value.risk, 'low');
+});
+
+test('a concrete target missing from the inspection cannot be low risk', () => {
+  const value = normalize({
+    inspection: { ...inspection, pages: [{ index: 0, items: [] }] },
+  });
+  assert.equal(value.risk, 'high');
+  assert.equal(validatePlan(value).valid, false);
+});
+
+test('inverses match real handler schemas and preserve selectors and formatting', () => {
+  const cases = [
+    ['move_page_item', { pageIndex: 2, itemIndex: 3, x: 1, y: 2 }, { geometricBounds: [5, 6, 7, 8] },
+      { pageIndex: 2, itemIndex: 3, x: 6, y: 5 }],
+    ['resize_page_item', { pageIndex: 2, itemIndex: 3, width: 1, height: 2, anchorPoint: 'TOP_LEFT_ANCHOR' },
+      { geometricBounds: [5, 6, 7, 8] },
+      { pageIndex: 2, itemIndex: 3, width: 2, height: 2, anchorPoint: 'TOP_LEFT_ANCHOR' }],
+    ['apply_paragraph_style', { pageIndex: 2, frameIndex: 3, styleName: 'New' }, { paragraphStyle: 'Old' },
+      { pageIndex: 2, frameIndex: 3, styleName: 'Old' }],
+    ['apply_character_style', { pageIndex: 2, frameIndex: 3, styleName: 'New', startIndex: 1, endIndex: 4 },
+      { characterStyle: 'Old' },
+      { pageIndex: 2, frameIndex: 3, styleName: 'Old', startIndex: 1, endIndex: 4 }],
+    ['apply_object_style', { pageIndex: 2, itemIndex: 3, itemType: 'ellipse', styleName: 'New' }, { objectStyle: 'Old' },
+      { pageIndex: 2, itemIndex: 3, itemType: 'ellipse', styleName: 'Old' }],
+    ['apply_color', { pageIndex: 2, objectIndex: 3, colorName: 'Red', colorType: 'STROKE' }, { strokeColor: 'Black' },
+      { pageIndex: 2, objectIndex: 3, colorName: 'Black', colorType: 'STROKE' }],
+    ['edit_text_frame', { pageIndex: 2, frameIndex: 3, content: 'New' }, { text: 'Old' },
+      { pageIndex: 2, frameIndex: 3, content: 'Old' }],
+  ];
+  for (const [toolName, args, before, expected] of cases) {
+    const inverse = buildInverse({ toolName, arguments: args }, { before });
+    assert.deepEqual(inverse, { toolName, arguments: expected }, toolName);
+    const schema = allToolDefinitions.find((entry) => entry.name === toolName).inputSchema;
+    for (const key of schema.required ?? []) assert.ok(Object.hasOwn(inverse.arguments, key), `${toolName}.${key}`);
+    for (const key of Object.keys(inverse.arguments)) assert.ok(Object.hasOwn(schema.properties, key), `${toolName}.${key}`);
+  }
+});
+
+test('text edits with formatting are high risk unless all changed formatting is capturable', () => {
+  for (const before of [
+    { text: 'Old' },
+    { text: 'Old', fontSize: 12, fontName: 'Arial', textColor: 'Black' },
+    { text: 'Old', fontSize: 12, fontName: 'Arial', textColor: 'Black', alignment: 'LEFT' },
+  ]) {
+    const input = plan([{ toolName: 'edit_text_frame', arguments: { frameIndex: 0, content: 'New', fontSize: 18 } }]);
+    input.targets[0].before = before;
+    const value = normalize({ plan: input });
+    const expected = before.fontSize !== undefined;
+    assert.equal(value.steps[0].reversible, expected);
+    assert.equal(value.steps[0].risk, expected ? 'low' : 'high');
+  }
+});
+
+test('text inverses cannot clear content through a handler that ignores empty strings', () => {
+  const inverse = buildInverse({
+    toolName: 'edit_text_frame',
+    arguments: { frameIndex: 0, content: 'New' },
+  }, { before: { text: '' } });
+  assert.equal(inverse, null);
 });
 
 test('classification requires valid required fields and enums for every allowlisted tool', () => {

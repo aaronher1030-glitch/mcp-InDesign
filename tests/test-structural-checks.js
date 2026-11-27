@@ -14,27 +14,37 @@ const ISSUE_CODES = new Set([
   'TARGET_STATE_MISMATCH',
 ]);
 
+// Public document dimensions are millimeters; item geometry is normalized to points.
+const TEST_PAGE_POINTS = 100;
+const TEST_PAGE_MILLIMETERS = TEST_PAGE_POINTS * 25.4 / 72;
+
 function item(index, name, overrides = {}) {
   return {
     index,
     name,
+    type: 'Rectangle',
     geometricBounds: [10, 10, 20 + index, 20 + index],
     overset: false,
+    textInspection: { status: 'not_applicable' },
+    textFormatting: { status: 'not_applicable' },
     ...overrides,
   };
 }
 
 function snapshot(overrides = {}) {
+  const validation = overrides.validation === undefined ? { issues: [] } : overrides.validation;
   return {
-    document: { name: 'Brief', pages: 1, width: 100, height: 100 },
+    document: { name: 'Brief', pages: 1, width: TEST_PAGE_MILLIMETERS, height: TEST_PAGE_MILLIMETERS },
     pages: [{ index: 0, items: [item(0, 'Title')] }],
     styles: { paragraph: ['Body'], character: [], object: [] },
     colors: ['Black'],
     layers: ['Layer 1'],
-    validation: { issues: [] },
     links: [],
     fonts: [],
     ...overrides,
+    validation: validation !== null && typeof validation === 'object' && !Array.isArray(validation)
+      ? { linkInspection: { status: 'known' }, fontInspection: { status: 'known' }, ...validation }
+      : validation,
   };
 }
 
@@ -194,6 +204,40 @@ test('flags unplanned page count changes and mismatched planned page deltas', ()
   assert.ok(hasCode(wrongDelta, 'PAGE_COUNT_CHANGED'));
 });
 
+test('rejects a blank planned page addition containing unplanned arbitrary items', () => {
+  const before = snapshot();
+  const added = item(0, 'Unplanned content');
+  const after = snapshot({
+    document: { name: 'Brief', pages: 2, width: 100, height: 100 },
+    pages: [{ index: 0, items: [item(0, 'Title')] }, { index: 1, items: [added] }],
+  });
+  const pageStep = { toolName: 'add_page', arguments: { position: 'AT_END' } };
+  const rejected = runStructuralChecks({ before, after, plan: plan([], [pageStep]) });
+  assert.ok(hasCode(rejected, 'UNINTENDED_ITEM_ADDITION'));
+
+  const planned = runStructuralChecks({
+    before,
+    after,
+    plan: plan([{ pageIndex: 1, itemIndex: 0, name: added.name }], [pageStep]),
+  });
+  assert.deepEqual(planned, { pass: true, issues: [] });
+});
+
+test('allows only explicitly identified inherited master items on a blank planned page', () => {
+  const before = snapshot();
+  const inherited = item(0, 'Folio', { inheritedMasterContent: true, masterName: 'A-Master' });
+  const after = snapshot({
+    document: { name: 'Brief', pages: 2, width: 100, height: 100 },
+    pages: [{ index: 0, items: [item(0, 'Title')] }, { index: 1, items: [inherited] }],
+  });
+  const result = runStructuralChecks({
+    before,
+    after,
+    plan: plan([], [{ toolName: 'add_page', arguments: { position: 'AT_END' } }]),
+  });
+  assert.deepEqual(result, { pass: true, issues: [] });
+});
+
 test('allows explicitly planned page addition including content on the new page', () => {
   const before = snapshot();
   const after = snapshot({
@@ -203,7 +247,9 @@ test('allows explicitly planned page addition including content on the new page'
   const result = runStructuralChecks({
     before,
     after,
-    plan: plan([], [{ toolName: 'add_page', arguments: { position: 'AT_END' } }]),
+    plan: plan([{ pageIndex: 1, itemIndex: 0, name: 'New heading' }], [
+      { toolName: 'add_page', arguments: { position: 'AT_END' } },
+    ]),
   });
   assert.deepEqual(result, { pass: true, issues: [] });
 });
@@ -221,12 +267,46 @@ test('maps index drift after an explicitly planned insertion at the beginning', 
   const result = runStructuralChecks({
     before,
     after,
-    plan: plan([], [{
+    plan: plan([{ pageIndex: 0, itemIndex: 0, name: 'Inserted' }], [{
       toolName: 'add_page',
       arguments: { position: 'AT_BEGINNING' },
     }]),
   });
   assert.deepEqual(result, { pass: true, issues: [] });
+});
+
+test('fails closed for a three-page partial inspection even when the planned deletion is invisible', () => {
+  const pages = [0, 1, 2].map((index) => ({ index, id: `page-${index}`, items: [item(0, `Page ${index}`)] }));
+  const before = snapshot({
+    document: { name: 'Brief', pages: 3, width: 100, height: 100 },
+    pages: structuredClone(pages),
+    coverage: { pageCount: 3, inspectedPageIndexes: [0, 1], complete: false },
+  });
+  const after = snapshot({
+    document: { name: 'Brief', pages: 2, width: 100, height: 100 },
+    pages: structuredClone(pages.slice(0, 2)),
+    coverage: { pageCount: 2, inspectedPageIndexes: [0, 1], complete: true },
+  });
+  const result = runStructuralChecks({
+    before,
+    after,
+    plan: plan([], [{ toolName: 'delete_page', arguments: { pageIndex: 2 } }]),
+  });
+  assert.equal(result.pass, false);
+  assert.ok(hasCode(result, 'TARGET_STATE_MISMATCH'));
+  assertOnlyKnownCodes(result);
+});
+
+test('rejects coverage metadata that does not match the inspected pages', () => {
+  const before = snapshot({
+    document: { name: 'Brief', pages: 3, width: 100, height: 100 },
+    pages: [{ index: 0, items: [item(0, 'Title')] }],
+    coverage: { pageCount: 3, inspectedPageIndexes: [0, 1, 2], complete: true },
+  });
+  const result = runStructuralChecks({ before, after: structuredClone(before), plan: plan([], []) });
+  assert.equal(result.pass, false);
+  assert.ok(hasCode(result, 'TARGET_STATE_MISMATCH'));
+  assert.match(JSON.stringify(result.issues), /coverage/i);
 });
 
 test('allows deletion of a planned page and its items without reporting removals', () => {
@@ -280,6 +360,148 @@ test('does not flag an unchanged pre-existing bounds violation as new', () => {
   assert.deepEqual(runStructuralChecks({ before, after, plan: plan([], []) }), { pass: true, issues: [] });
 });
 
+test('does not pass text overflow or font checks when inspection capabilities are unknown', () => {
+  const before = snapshot();
+  const unknownOverflow = snapshot({ pages: [{ index: 0, items: [item(0, 'Title', {
+    type: 'TextFrame', overset: null,
+    textInspection: { status: 'unknown', reason: 'overflows unavailable' },
+    textFormatting: { status: 'unknown', reason: 'formatting unavailable' },
+  })] }] });
+  const overflowResult = runStructuralChecks({ before, after: unknownOverflow, plan: plan([], []) });
+  assert.ok(hasCode(overflowResult, 'TEXT_OVERFLOW'));
+
+  const unknownFonts = snapshot({ validation: {
+    issues: [], fontInspection: { status: 'unknown', reason: 'font.status unavailable' },
+  } });
+  const fontResult = runStructuralChecks({ before, after: unknownFonts, plan: plan([], []) });
+  assert.ok(hasCode(fontResult, 'MISSING_FONT'));
+
+  const unknownFormatting = snapshot({ pages: [{ index: 0, items: [item(0, 'Title', {
+    type: 'TextFrame', overset: false, textInspection: { status: 'known' },
+    textFormatting: { status: 'unknown', reason: 'formatting unavailable' },
+  })] }] });
+  const formattingResult = runStructuralChecks({ before, after: unknownFormatting, plan: plan([], []) });
+  assert.ok(hasCode(formattingResult, 'TARGET_STATE_MISMATCH'));
+
+  const unknownLinks = snapshot({ validation: {
+    issues: [], linkInspection: { status: 'unknown', reason: 'link status unavailable' },
+  } });
+  const linkResult = runStructuralChecks({ before, after: unknownLinks, plan: plan([], []) });
+  assert.ok(hasCode(linkResult, 'MISSING_LINK'));
+  assertOnlyKnownCodes(fontResult);
+});
+
+test('fails closed when required text or asset inspection capabilities are absent or malformed', () => {
+  const knownFormatting = {
+    status: 'known', fontNames: ['Arial'], pointSizes: [12], justifications: ['leftAlign'],
+    fillColors: ['Black'], paragraphStyles: ['Body'], characterStyles: ['None'],
+  };
+  const mutations = [
+    (value) => { delete value.pages[0].items[0].textInspection; },
+    (value) => { value.pages[0].items[0].textInspection = null; },
+    (value) => { value.pages[0].items[0].textInspection = 'known'; },
+    (value) => { value.pages[0].items[0].textInspection = { status: 'KNOWN' }; },
+    (value) => { value.pages[0].items[0].textInspection = { status: 'unavailable' }; },
+    (value) => { delete value.pages[0].items[0].textFormatting; },
+    (value) => { value.pages[0].items[0].textFormatting = []; },
+    (value) => { value.pages[0].items[0].textFormatting = { status: null }; },
+    (value) => {
+      Object.assign(value.pages[0].items[0], {
+        type: 'TextFrame', contents: 'Text', overset: 'false',
+        textInspection: { status: 'known' }, textFormatting: knownFormatting,
+      });
+    },
+    (value) => {
+      Object.assign(value.pages[0].items[0], {
+        type: 'TextFrame', contents: 'Text', overset: false,
+        textInspection: { status: 'known' }, textFormatting: { status: 'known', fontNames: ['Arial'] },
+      });
+    },
+    (value) => {
+      Object.assign(value.pages[0].items[0], {
+        type: 'TextFrame', contents: 'Text', overset: false,
+        textInspection: { status: 'known' },
+        textFormatting: { ...knownFormatting, pointSizes: ['12'] },
+      });
+    },
+    (value) => { delete value.validation.fontInspection; },
+    (value) => { delete value.validation.linkInspection; },
+    (value) => { value.validation.fontInspection = null; },
+    (value) => { value.validation.linkInspection = 'known'; },
+    (value) => { value.validation.fontInspection = { status: 'success' }; },
+  ];
+  for (const mutate of mutations) {
+    const after = snapshot();
+    mutate(after);
+    const result = runStructuralChecks({ before: structuredClone(after), after, plan: plan([], []) });
+    assert.equal(result.pass, false, JSON.stringify(after));
+    assert.ok(hasCode(result, 'TARGET_STATE_MISMATCH'), JSON.stringify(after));
+  }
+
+  const incompleteBefore = snapshot();
+  delete incompleteBefore.pages[0].items[0].textInspection;
+  const result = runStructuralChecks({
+    before: incompleteBefore, after: structuredClone(incompleteBefore), plan: plan([], []),
+  });
+  assert.equal(result.pass, false);
+  assert.ok(hasCode(result, 'TARGET_STATE_MISMATCH'));
+});
+
+test('accepts genuine not_applicable capabilities but not on text frames', () => {
+  const before = snapshot();
+  const graphic = snapshot();
+  assert.deepEqual(runStructuralChecks({ before, after: graphic, plan: plan([], []) }), {
+    pass: true, issues: [],
+  });
+
+  graphic.validation.linkInspection = { status: 'not_applicable' };
+  graphic.validation.fontInspection = { status: 'not_applicable' };
+  assert.deepEqual(runStructuralChecks({ before, after: graphic, plan: plan([], []) }), {
+    pass: true, issues: [],
+  });
+
+  const masqueradingText = snapshot({ pages: [{ index: 0, items: [item(0, 'Body', {
+    type: 'TextFrame', contents: 'Text',
+  })] }] });
+  const result = runStructuralChecks({ before, after: masqueradingText, plan: plan([], []) });
+  assert.equal(result.pass, false);
+  assert.ok(hasCode(result, 'TARGET_STATE_MISMATCH'));
+});
+
+test('fails closed when the before snapshot has unknown text or asset capabilities', () => {
+  const before = snapshot({ pages: [{ index: 0, items: [item(0, 'Body', {
+    type: 'TextFrame', contents: 'Text', overset: null,
+    textInspection: { status: 'unknown', reason: 'overflow unavailable' },
+    textFormatting: { status: 'unknown', reason: 'formatting unavailable' },
+  })] }] });
+  before.validation.fontInspection = { status: 'unknown', reason: 'fonts unavailable' };
+  const result = runStructuralChecks({ before, after: snapshot(), plan: plan([], []) });
+  assert.equal(result.pass, false);
+  assert.ok(hasCode(result, 'TEXT_OVERFLOW'));
+  assert.ok(hasCode(result, 'TARGET_STATE_MISMATCH'));
+  assert.ok(hasCode(result, 'MISSING_FONT'));
+});
+
+test('compares millimeter document dimensions against point-normalized bounds', () => {
+  const before = snapshot();
+  const plannedTarget = target(before.pages[0].items[0]);
+  const insidePage = item(0, 'Title', { geometricBounds: [10, 10, 50, 20] });
+  const insideResult = runStructuralChecks({
+    before,
+    after: snapshot({ pages: [{ index: 0, items: [insidePage] }] }),
+    plan: plan([plannedTarget], [step(plannedTarget, { geometricBounds: insidePage.geometricBounds })]),
+  });
+  assert.deepEqual(insideResult, { pass: true, issues: [] });
+
+  const beyondPage = item(0, 'Title', { geometricBounds: [10, 10, TEST_PAGE_POINTS + 0.01, 20] });
+  const outsideResult = runStructuralChecks({
+    before,
+    after: snapshot({ pages: [{ index: 0, items: [beyondPage] }] }),
+    plan: plan([plannedTarget], [step(plannedTarget, { geometricBounds: beyondPage.geometricBounds })]),
+  });
+  assert.ok(hasCode(outsideResult, 'OUT_OF_BOUNDS'));
+});
+
 test('reports newly missing links and fonts but not pre-existing missing assets', () => {
   const before = snapshot({
     validation: { issues: ['Broken link: old.tif', 'Missing font: Old Font'] },
@@ -331,6 +553,135 @@ test('does not confuse style types or report unchanged duplicate colors', () => 
 
   after.colors = ['Black', 'Black', 'Black'];
   assert.ok(hasCode(runStructuralChecks({ before, after, plan: plan([], []) }), 'DUPLICATE_STYLE'));
+});
+
+test('compares the complete target state instead of letting expected geometry mask extra mutations', () => {
+  const before = snapshot({ pages: [{ index: 0, items: [item(0, 'Title', { id: 'title-id' })] }] });
+  const plannedTarget = target(before.pages[0].items[0]);
+  const moved = item(0, 'Title', {
+    id: 'title-id', geometricBounds: [30, 10, 40, 20], visible: false, locked: true,
+    name: 'Renamed', fillColorName: 'Red',
+  });
+  const after = snapshot({ pages: [{ index: 0, items: [moved] }] });
+  const move = step(plannedTarget, { geometricBounds: moved.geometricBounds });
+  const rejected = runStructuralChecks({ before, after, plan: plan([plannedTarget], [move]) });
+  assert.ok(hasCode(rejected, 'TARGET_STATE_MISMATCH'));
+  assert.deepEqual(rejected.issues.find((issue) => issue.fields)?.fields.sort(), [
+    'fillColorName', 'locked', 'name', 'visible',
+  ]);
+
+  const explicit = runStructuralChecks({
+    before,
+    after,
+    plan: plan([plannedTarget], [step(plannedTarget, {
+      geometricBounds: moved.geometricBounds, visible: false, locked: true, name: 'Renamed', fillColorName: 'Red',
+    })]),
+  });
+  assert.deepEqual(explicit, { pass: true, issues: [] });
+});
+
+test('allows only properties implied by the actual planned target operations', () => {
+  const before = snapshot({ pages: [{ index: 0, items: [item(0, 'Title', {
+    id: 'title-id', visible: true, locked: false, fillColorName: 'Black', strokeWeight: 0,
+  })] }] });
+  const changed = item(0, 'Title', {
+    id: 'title-id', geometricBounds: [30, 10, 40, 20], visible: true, locked: false,
+    fillColorName: 'Black', strokeWeight: 0,
+  });
+  const plannedTarget = target(before.pages[0].items[0]);
+  const allowed = runStructuralChecks({
+    before,
+    after: snapshot({ pages: [{ index: 0, items: [changed] }] }),
+    plan: plan([plannedTarget], [step(plannedTarget, {})]),
+  });
+  assert.deepEqual(allowed, { pass: true, issues: [] });
+
+  changed.fillColorName = 'Red';
+  const rejected = runStructuralChecks({
+    before,
+    after: snapshot({ pages: [{ index: 0, items: [changed] }] }),
+    plan: plan([plannedTarget], [step(plannedTarget, {})]),
+  });
+  assert.ok(hasCode(rejected, 'TARGET_STATE_MISMATCH'));
+});
+
+test('content-only edit_text_frame permits reflow fields but not formatting mutations', () => {
+  const beforeItem = item(0, 'Body', {
+    id: 'body-id', type: 'TextFrame', contents: 'Before',
+    textInspection: { status: 'known' },
+    textFormatting: {
+      status: 'known', fontNames: ['Arial'], pointSizes: [12], justifications: ['leftAlign'],
+      fillColors: ['Black'], paragraphStyles: ['Body'], characterStyles: ['None'],
+    },
+  });
+  const changed = {
+    ...beforeItem, contents: 'After', overset: true,
+    textFormatting: { ...beforeItem.textFormatting, fontNames: ['Courier'] },
+  };
+  const plannedTarget = target(beforeItem);
+  const edit = step(plannedTarget, {}, {
+    toolName: 'edit_text_frame',
+    arguments: { pageIndex: 0, frameIndex: 0, content: 'After' },
+  });
+  const result = runStructuralChecks({
+    before: snapshot({ pages: [{ index: 0, items: [beforeItem] }] }),
+    after: snapshot({ pages: [{ index: 0, items: [changed] }] }),
+    plan: plan([plannedTarget], [edit]),
+  });
+  assert.equal(result.pass, false);
+  assert.equal(result.issues.some((issue) => issue.code === 'TEXT_OVERFLOW'), true);
+  assert.deepEqual(result.issues.find((issue) => issue.fields)?.fields, ['textFormatting']);
+
+  changed.overset = false;
+  changed.textFormatting = structuredClone(beforeItem.textFormatting);
+  assert.deepEqual(runStructuralChecks({
+    before: snapshot({ pages: [{ index: 0, items: [beforeItem] }] }),
+    after: snapshot({ pages: [{ index: 0, items: [changed] }] }),
+    plan: plan([plannedTarget], [edit]),
+  }), { pass: true, issues: [] });
+});
+
+test('edit_text_frame permits formatting only for arguments that perform formatting writes', () => {
+  const beforeItem = item(0, 'Body', {
+    id: 'body-id', type: 'TextFrame', contents: 'Before',
+    textInspection: { status: 'known' },
+    textFormatting: {
+      status: 'known', fontNames: ['Arial'], pointSizes: [12], justifications: ['leftAlign'],
+      fillColors: ['Black'], paragraphStyles: ['Body'], characterStyles: ['None'],
+    },
+  });
+  const changed = {
+    ...beforeItem,
+    textFormatting: { ...beforeItem.textFormatting, pointSizes: [14], fontNames: ['Courier'] },
+  };
+  const plannedTarget = target(beforeItem);
+  for (const args of [
+    { fontSize: 14 }, { fontName: 'Courier' }, { textColor: 'Red' }, { alignment: 'CENTER' },
+  ]) {
+    const edit = step(plannedTarget, {}, {
+      toolName: 'edit_text_frame',
+      arguments: { pageIndex: 0, frameIndex: 0, ...args },
+    });
+    assert.deepEqual(runStructuralChecks({
+      before: snapshot({ pages: [{ index: 0, items: [beforeItem] }] }),
+      after: snapshot({ pages: [{ index: 0, items: [changed] }] }),
+      plan: plan([plannedTarget], [edit]),
+    }), { pass: true, issues: [] }, JSON.stringify(args));
+  }
+
+  for (const args of [{}, { content: '' }, { fontSize: 0 }, { fontName: '' }, { textColor: '' }, { alignment: '' }]) {
+    const edit = step(plannedTarget, {}, {
+      toolName: 'edit_text_frame',
+      arguments: { pageIndex: 0, frameIndex: 0, ...args },
+    });
+    const result = runStructuralChecks({
+      before: snapshot({ pages: [{ index: 0, items: [beforeItem] }] }),
+      after: snapshot({ pages: [{ index: 0, items: [changed] }] }),
+      plan: plan([plannedTarget], [edit]),
+    });
+    assert.equal(result.pass, false, JSON.stringify(args));
+    assert.deepEqual(result.issues.find((issue) => issue.fields)?.fields, ['textFormatting']);
+  }
 });
 
 test('flags expected target state mismatches and missing targets', () => {
@@ -413,25 +764,52 @@ test('treats impossible page indexes and changed document counts conservatively'
 
 test('keeps planned targets bound to their page across planned index drift', () => {
   const title = item(0, 'Title', { id: 'title-id' });
-  const before = snapshot({ pages: [{ index: 0, id: 'old-page', items: [title] }] });
+  const before = snapshot({
+    document: { pages: 2, width: 100, height: 100 },
+    pages: [{ index: 0, id: 'old-page', items: [title] }, { index: 1, id: 'last-page', items: [] }],
+  });
   const moved = { ...title, geometricBounds: [30, 10, 40, 20] };
   const after = snapshot({
-    document: { name: 'Brief', pages: 2, width: 100, height: 100 },
+    document: { name: 'Brief', pages: 3, width: 100, height: 100 },
     pages: [
       { index: 0, id: 'new-page', items: [item(0, 'Inserted')] },
       { index: 1, id: 'old-page', items: [moved] },
+      { index: 2, id: 'last-page', items: [] },
     ],
   });
   const plannedTarget = target(title);
   const result = runStructuralChecks({
     before,
     after,
-    plan: plan([plannedTarget], [
+    plan: plan([
+      plannedTarget,
+      { pageIndex: 0, itemIndex: 0, name: 'Inserted' },
+    ], [
       { toolName: 'add_page', arguments: { position: 'AT_BEGINNING' } },
       step(plannedTarget, { geometricBounds: moved.geometricBounds }),
     ]),
   });
   assert.deepEqual(result, { pass: true, issues: [] });
+});
+
+test('rejects malformed asset records and empty required metadata collections', () => {
+  const cases = [
+    snapshot({ validation: { issues: [], missingLinks: [{}] } }),
+    snapshot({ validation: { issues: [], missingFonts: [{ status: '' }] } }),
+    snapshot({ links: [{ unrelated: true }] }),
+    snapshot({ fonts: [{ name: '   ' }] }),
+    snapshot({ styles: {} }),
+    snapshot({ styles: { paragraph: [], character: [], object: [] } }),
+    snapshot({ colors: [] }),
+    snapshot({ colors: {} }),
+    snapshot({ validation: {} }),
+  ];
+  for (const after of cases) {
+    const result = runStructuralChecks({ before: snapshot(), after, plan: plan([], []) });
+    assert.equal(result.pass, false, JSON.stringify(after));
+    assert.ok(hasCode(result, 'TARGET_STATE_MISMATCH'), JSON.stringify(after));
+    assertOnlyKnownCodes(result);
+  }
 });
 
 test('rejects nameless style entries, malformed validation issues, and missing geometry', () => {

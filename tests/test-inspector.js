@@ -40,7 +40,7 @@ test('inspects metadata and each requested page in deterministic tool order', as
 
   assert.deepEqual(calls.map(({ name }) => name), [
     'get_document_info',
-    'get_document_styles',
+    'get_document_styles', 'get_document_styles', 'get_document_styles',
     'get_document_colors',
     'get_document_layers',
     'validate_document',
@@ -48,7 +48,10 @@ test('inspects metadata and each requested page in deterministic tool order', as
     'list_page_items', 'get_page_content_summary',
     'list_page_items', 'get_page_content_summary',
   ]);
-  assert.deepEqual(calls.slice(5).map(({ args }) => args), [
+  assert.deepEqual(calls.slice(1, 4).map(({ args }) => args), [
+    { styleType: 'PARAGRAPH' }, { styleType: 'CHARACTER' }, { styleType: 'OBJECT' },
+  ]);
+  assert.deepEqual(calls.slice(7).map(({ args }) => args), [
     { pageIndex: 0 }, { pageIndex: 0 },
     { pageIndex: 1 }, { pageIndex: 1 },
     { pageIndex: 2 }, { pageIndex: 2 },
@@ -63,6 +66,80 @@ test('inspects metadata and each requested page in deterministic tool order', as
   assert.deepEqual(inspection.validation, { issues: [] });
   assert.match(inspection.inspectionId, /^[0-9a-f]{8}-[0-9a-f-]{27}$/i);
   assert.match(inspection.fingerprint, /^[0-9a-f]{64}$/);
+});
+
+test('aggregates actual single-type style handler responses into the canonical style map', async () => {
+  const results = fixture();
+  const calls = [];
+  const inspection = await inspectLayout({}, async (name, args) => {
+    calls.push({ name, args });
+    if (name === 'get_document_styles') {
+      const styles = {
+        PARAGRAPH: ['Body', 'Heading'],
+        CHARACTER: ['Emphasis'],
+        OBJECT: ['Card'],
+      }[args?.styleType];
+      return { success: true, result: { styleType: args.styleType, count: styles.length, styles } };
+    }
+    return { success: true, result: results[name] };
+  });
+  assert.deepEqual(inspection.styles, {
+    paragraph: ['Body', 'Heading'], character: ['Emphasis'], object: ['Card'],
+  });
+  assert.deepEqual(calls.filter(({ name }) => name === 'get_document_styles').map(({ args }) => args), [
+    { styleType: 'PARAGRAPH' }, { styleType: 'CHARACTER' }, { styleType: 'OBJECT' },
+  ]);
+});
+
+test('preserves legacy count/styles responses as paragraph styles', async () => {
+  const results = fixture();
+  const inspection = await inspectLayout({}, async (name, args) => {
+    if (name === 'get_document_styles') {
+      return { success: true, result: { count: 1, styles: ['Body'] } };
+    }
+    return { success: true, result: results[name] };
+  });
+  assert.deepEqual(inspection.styles, { paragraph: ['Body'], character: [], object: [] });
+});
+
+test('prefers actual per-type responses over a legacy canonical style map', async () => {
+  const results = fixture();
+  const inspection = await inspectLayout({}, async (name, args) => {
+    if (name === 'get_document_styles') {
+      if (args.styleType === 'PARAGRAPH') {
+        return { success: true, result: { paragraph: ['Legacy Body'], character: ['Legacy Emphasis'] } };
+      }
+      const styles = args.styleType === 'CHARACTER' ? ['Actual Emphasis'] : ['Card'];
+      return { success: true, result: { styleType: args.styleType, count: 1, styles } };
+    }
+    return { success: true, result: results[name] };
+  });
+  assert.deepEqual(inspection.styles, {
+    paragraph: ['Legacy Body'], character: ['Actual Emphasis'], object: ['Card'],
+  });
+});
+
+test('records page coverage and lifts validated font/link status into fingerprintable inspection data', async () => {
+  const results = fixture();
+  results.validate_document = {
+    issues: [],
+    fonts: [{ name: 'Arial', status: 'SUBSTITUTED' }],
+    links: [{ id: 'link-1', path: 'old.tif', status: 'NORMAL' }],
+    fontInspection: { status: 'known' },
+  };
+  const inspection = await inspectLayout({ pageRange: '1' }, toolFor(results));
+  assert.deepEqual(inspection.coverage, {
+    pageCount: 3, inspectedPageIndexes: [0], complete: false,
+  });
+  assert.deepEqual(inspection.fonts, results.validate_document.fonts);
+  assert.deepEqual(inspection.links, results.validate_document.links);
+  assert.notEqual(inspection.fingerprint, documentFingerprint({
+    document: results.get_document_info,
+    pages: [{ index: 0, items: results.list_page_items.items, summary: results.get_page_content_summary }],
+    styles: results.get_document_styles,
+    colors: results.get_document_colors,
+    layers: results.get_document_layers,
+  }));
 });
 
 test('defaults to all pages and accepts pageCount metadata', async () => {
@@ -155,6 +232,34 @@ test('rejects malformed envelopes and page item payloads instead of inventing pa
         : { success: true, result: results[name] }),
       (error) => error.code === 'INSPECTION_FAILED',
       entry.name,
+    );
+  }
+});
+
+test('accepts matching returned page identity and item count metadata', async () => {
+  const results = fixture();
+  results.list_page_items = { pageIndex: 0, count: 1, items: results.list_page_items.items };
+  results.get_page_content_summary = { ...results.get_page_content_summary, pageIndex: 0 };
+  const inspection = await inspectLayout({ pageRange: '1' }, toolFor(results));
+  assert.equal(inspection.pages[0].index, 0);
+  assert.equal(inspection.pages[0].items.length, 1);
+});
+
+test('rejects wrong-page payloads and malformed or inconsistent returned counts', async () => {
+  const cases = [
+    { tool: 'list_page_items', value: { pageIndex: 1, count: 1, items: fixture().list_page_items.items } },
+    { tool: 'list_page_items', value: { pageIndex: '0', count: 1, items: fixture().list_page_items.items } },
+    { tool: 'list_page_items', value: { pageIndex: 0, count: 2, items: fixture().list_page_items.items } },
+    { tool: 'list_page_items', value: { pageIndex: 0, count: '1', items: fixture().list_page_items.items } },
+    { tool: 'get_page_content_summary', value: { ...fixture().get_page_content_summary, pageIndex: 1 } },
+  ];
+  for (const entry of cases) {
+    const results = fixture();
+    results[entry.tool] = entry.value;
+    await assert.rejects(
+      inspectLayout({ pageRange: '1' }, toolFor(results)),
+      (error) => error.code === 'INSPECTION_FAILED' && error.toolName === entry.tool,
+      `${entry.tool}: ${JSON.stringify(entry.value)}`,
     );
   }
 });

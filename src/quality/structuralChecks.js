@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { toPoints } from '../skills/units.js';
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -67,21 +68,39 @@ function entryName(entry) {
 }
 
 function validateCollection(value, path, errors) {
+  let count = 0;
   if (Array.isArray(value)) {
+    count = value.length;
     if (value.some((entry) => entryName(entry) === null)) errors.push(`${path} entries must have names`);
-    return;
-  }
-  if (!isRecord(value)) {
+  } else if (!isRecord(value)) {
     errors.push(`${path} must be an array or an object of arrays`);
-    return;
-  }
-  for (const [type, entries] of Object.entries(value)) {
-    if (!Array.isArray(entries)) {
-      errors.push(`${path}.${type} must be an array`);
-    } else if (entries.some((entry) => entryName(entry) === null)) {
-      errors.push(`${path}.${type} entries must have names`);
+  } else {
+    for (const [type, entries] of Object.entries(value)) {
+      if (!Array.isArray(entries)) {
+        errors.push(`${path}.${type} must be an array`);
+      } else {
+        count += entries.length;
+        if (entries.some((entry) => entryName(entry) === null)) {
+          errors.push(`${path}.${type} entries must have names`);
+        }
+      }
     }
   }
+  if (count === 0) errors.push(`${path} must contain at least one named entry`);
+}
+
+function meaningfulMetadata(value) {
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (!isRecord(value)) return false;
+  const identities = ['id', 'uuid', 'path', 'filePath', 'name', 'fontName', 'fullName',
+    'postscriptName', 'message', 'code', 'type', 'category'];
+  const statuses = ['status', 'state', 'linkStatus'];
+  if (!identities.some((key) => scalarIdentity(value[key]))
+      && !statuses.some((key) => typeof value[key] === 'boolean' || scalarIdentity(value[key]))) {
+    return false;
+  }
+  return statuses.every((key) => value[key] === undefined
+    || typeof value[key] === 'boolean' || scalarIdentity(value[key]));
 }
 
 function validateAssetArray(value, path, errors) {
@@ -89,8 +108,75 @@ function validateAssetArray(value, path, errors) {
     errors.push(`${path} must be an array`);
     return;
   }
-  if (value.some((entry) => typeof entry !== 'string' && !isRecord(entry))) {
-    errors.push(`${path} entries must be strings or objects`);
+  if (value.some((entry) => !meaningfulMetadata(entry))) {
+    errors.push(`${path} entries must have meaningful identities and statuses`);
+  }
+}
+
+const CAPABILITY_STATUSES = new Set(['known', 'unknown', 'not_applicable']);
+const FORMATTING_ARRAY_FIELDS = [
+  'fontNames', 'justifications', 'fillColors', 'paragraphStyles', 'characterStyles',
+];
+
+function validateCapability(value, path, errors, item = null) {
+  if (!isRecord(value)) {
+    errors.push(`${path} must be an inspection capability object`);
+    return;
+  }
+  if (!CAPABILITY_STATUSES.has(value.status)) {
+    errors.push(`${path}.status must be known, unknown, or not_applicable`);
+    return;
+  }
+  if (value.reason !== undefined && (typeof value.reason !== 'string' || !value.reason.trim())) {
+    errors.push(`${path}.reason must be a non-empty string when supplied`);
+  }
+  if (value.status === 'not_applicable' && item
+      && (item.type === 'TextFrame' || Object.hasOwn(item, 'contents'))) {
+    errors.push(`${path} cannot be not_applicable for a text frame`);
+  }
+  if (value.status !== 'known' || !item) return;
+  if (path.endsWith('.textInspection') && typeof item.overset !== 'boolean') {
+    errors.push(`${path} is known but item.overset must be a boolean`);
+  }
+  if (path.endsWith('.textFormatting')) {
+    for (const field of FORMATTING_ARRAY_FIELDS) {
+      if (!Array.isArray(value[field]) || value[field].some((entry) => typeof entry !== 'string')) {
+        errors.push(`${path}.${field} must be an array of strings`);
+      }
+    }
+    if (!Array.isArray(value.pointSizes) || value.pointSizes.some((size) => !Number.isFinite(size))) {
+      errors.push(`${path}.pointSizes must be an array of finite numbers`);
+    }
+  }
+}
+
+function validateCoverage(snapshot, path, errors) {
+  const count = documentPageCount(snapshot);
+  if (!Number.isInteger(count) || !Array.isArray(snapshot.pages)) return;
+  const indexes = snapshot.pages.map((page) => page?.index);
+  if (snapshot.coverage === undefined) {
+    if (snapshot.pages.length !== count || indexes.some((index) => !isIndex(index))) {
+      errors.push(`${path} must inspect every document page before verification`);
+    }
+    return;
+  }
+  const coverage = snapshot.coverage;
+  const sortedIndexes = [...indexes].sort((a, b) => a - b);
+  const inspectedIndexes = Array.isArray(coverage?.inspectedPageIndexes)
+    ? [...coverage.inspectedPageIndexes].sort((a, b) => a - b)
+    : [];
+  if (!isRecord(coverage) || coverage.pageCount !== count
+      || !Array.isArray(coverage.inspectedPageIndexes)
+      || coverage.inspectedPageIndexes.some((index) => !isIndex(index) || index >= count)
+      || new Set(coverage.inspectedPageIndexes).size !== coverage.inspectedPageIndexes.length
+      || typeof coverage.complete !== 'boolean'
+      || coverage.complete !== (coverage.inspectedPageIndexes.length === count)
+      || indexes.some((index) => !isIndex(index) || index >= count)
+      || indexes.length !== coverage.inspectedPageIndexes.length
+      || sortedIndexes.some((index, i) => index !== inspectedIndexes[i])) {
+    errors.push(`${path}.coverage is invalid or does not match inspected pages`);
+  } else if (!coverage.complete) {
+    errors.push(`${path} has incomplete page coverage and cannot verify uninspected changes`);
   }
 }
 
@@ -151,26 +237,33 @@ function validateSnapshot(snapshot, path, errors) {
         if (isRecord(item) && stableId(item) !== undefined && !scalarIdentity(stableId(item))) {
           errors.push(`${path}.pages[${position}].items[${itemPosition}] has an invalid stable id`);
         }
+        if (isRecord(item)) {
+          const itemPath = `${path}.pages[${position}].items[${itemPosition}]`;
+          validateCapability(item.textInspection, `${itemPath}.textInspection`, errors, item);
+          validateCapability(item.textFormatting, `${itemPath}.textFormatting`, errors, item);
+        }
       });
     });
   }
 
+  validateCoverage(snapshot, path, errors);
   validateCollection(snapshot.styles, `${path}.styles`, errors);
   validateCollection(snapshot.colors, `${path}.colors`, errors);
   if (!isRecord(snapshot.validation)) {
     errors.push(`${path}.validation must be an object`);
   } else {
-    if (snapshot.validation.issues !== undefined && !Array.isArray(snapshot.validation.issues)) {
+    if (!Array.isArray(snapshot.validation.issues)) {
       errors.push(`${path}.validation.issues must be an array`);
-    } else if (Array.isArray(snapshot.validation.issues)
-        && snapshot.validation.issues.some((issue) => typeof issue !== 'string' && !isRecord(issue))) {
-      errors.push(`${path}.validation.issues entries must be strings or objects`);
+    } else if (snapshot.validation.issues.some((issue) => !meaningfulMetadata(issue))) {
+      errors.push(`${path}.validation.issues entries must have meaningful identities or statuses`);
     }
     for (const key of ['missingLinks', 'missingFonts']) {
       for (const list of validationLists(snapshot.validation, key)) {
         validateAssetArray(list, `${path}.validation.${key}`, errors);
       }
     }
+    validateCapability(snapshot.validation.linkInspection, `${path}.validation.linkInspection`, errors);
+    validateCapability(snapshot.validation.fontInspection, `${path}.validation.fontInspection`, errors);
   }
   for (const key of ['links', 'fonts']) {
     if (snapshot[key] !== undefined) validateAssetArray(snapshot[key], `${path}.${key}`, errors);
@@ -382,10 +475,13 @@ function overflow(item) {
 function outsideBounds(item, document, bleed) {
   if (!Array.isArray(item?.geometricBounds)) return false;
   const [top, left, bottom, right] = item.geometricBounds;
+  // Document dimensions remain public millimeters; inspected geometry is points.
+  const pageHeight = toPoints(document.height, 'mm');
+  const pageWidth = toPoints(document.width, 'mm');
   const epsilon = 1e-7;
   return top < -bleed.top - epsilon || left < -bleed.left - epsilon
-    || bottom > document.height + bleed.bottom + epsilon
-    || right > document.width + bleed.right + epsilon;
+    || bottom > pageHeight + bleed.bottom + epsilon
+    || right > pageWidth + bleed.right + epsilon;
 }
 
 function missingAssets(snapshot, kind) {
@@ -459,6 +555,50 @@ function duplicateNames(snapshot, kind) {
   return duplicates;
 }
 
+function impliedTargetFields(step) {
+  const args = step.arguments ?? {};
+  const fields = new Set();
+  switch (step.toolName) {
+    case 'move_page_item':
+    case 'resize_page_item':
+      fields.add('geometricBounds');
+      break;
+    case 'set_page_item_properties':
+      if (args.fillColor !== undefined) fields.add('fillColorName');
+      if (args.strokeColor !== undefined) fields.add('strokeColorName');
+      if (args.strokeWeight !== undefined) fields.add('strokeWeight');
+      if (args.visible !== undefined) fields.add('visible');
+      if (args.locked !== undefined) fields.add('locked');
+      break;
+    case 'edit_text_frame': {
+      const changesContent = typeof args.content === 'string' && args.content.length > 0;
+      const changesFormatting = !!args.fontSize || !!args.fontName || !!args.textColor || !!args.alignment;
+      if (changesContent) fields.add('contents');
+      if (changesFormatting) fields.add('textFormatting');
+      if (changesContent || changesFormatting) {
+        for (const field of ['overset', 'textOverflow', 'overflow', 'overflows']) fields.add(field);
+      }
+      break;
+    }
+    case 'apply_paragraph_style':
+    case 'apply_character_style':
+      for (const field of ['textFormatting', 'overset', 'textOverflow', 'overflow', 'overflows']) fields.add(field);
+      break;
+    case 'apply_object_style':
+      for (const field of ['appliedObjectStyle', 'fillColorName', 'strokeColorName', 'fillTint',
+        'strokeTint', 'strokeWeight', 'rotationAngle', 'shearAngle', 'textFormatting',
+        'overset', 'textOverflow', 'overflow', 'overflows']) fields.add(field);
+      break;
+    case 'apply_color':
+      if ((args.colorType ?? 'FILL') === 'FILL') fields.add('fillColorName');
+      else fields.add('strokeColorName');
+      break;
+    default:
+      break;
+  }
+  return fields;
+}
+
 function expectedTargetState(target, steps) {
   const expected = {};
   let supplied = false;
@@ -474,6 +614,32 @@ function expectedTargetState(target, steps) {
     supplied = true;
   }
   return supplied ? expected : null;
+}
+
+function addUnknownCapabilityIssues(snapshot, phase, addIssue) {
+  for (const page of snapshot.pages) {
+    for (const entry of page.items) {
+      const details = { phase, pageIndex: page.index, itemIndex: itemIndex(entry) };
+      if (entry.textInspection.status === 'unknown') {
+        addIssue('TEXT_OVERFLOW', `Text overflow status is unknown: ${entry.name ?? entry.id}`, {
+          ...details, status: 'unknown', reason: entry.textInspection.reason,
+        });
+      }
+      if (entry.textFormatting.status === 'unknown') {
+        addIssue('TARGET_STATE_MISMATCH', `Text formatting status is unknown: ${entry.name ?? entry.id}`, {
+          ...details, status: 'unknown', reason: entry.textFormatting.reason,
+        });
+      }
+    }
+  }
+  for (const [kind, code] of [['link', 'MISSING_LINK'], ['font', 'MISSING_FONT']]) {
+    const inspection = snapshot.validation?.[`${kind}Inspection`];
+    if (inspection?.status === 'unknown') {
+      addIssue(code, `${kind} inspection status is unknown`, {
+        phase, status: 'unknown', reason: inspection.reason,
+      });
+    }
+  }
 }
 
 /**
@@ -515,6 +681,9 @@ export function runStructuralChecks(input = {}) {
     });
     return { pass: false, issues };
   }
+
+  addUnknownCapabilityIssues(before, 'before', addIssue);
+  addUnknownCapabilityIssues(after, 'after', addIssue);
 
   const mapping = mapPages(before, after, plan);
   if (!mapping.valid) {
@@ -563,8 +732,12 @@ export function runStructuralChecks(input = {}) {
             changedPairs.push({ beforeItem: beforeEntry.item, afterItem: afterEntry.item, beforePage, afterPage });
           }
         } else {
+          const targeted = targets.some((target) => (
+            targetMatches(target, afterEntry.item, afterPage, beforePage ?? afterPage)
+          ));
           const planned = pair.plannedAddition
-            || targets.some((target) => targetMatches(target, afterEntry.item, afterPage, beforePage ?? afterPage));
+            ? targeted || afterEntry.item.inheritedMasterContent === true
+            : targeted;
           if (!planned) {
             addIssue('UNINTENDED_ITEM_ADDITION', `Unintended item addition: ${afterEntry.item.name ?? afterEntry.item.id}`, {
               pageIndex: afterPage.index,
@@ -675,18 +848,30 @@ export function runStructuralChecks(input = {}) {
       continue;
     }
     const expected = expectedTargetState(target, steps);
-    if (expected) {
-      const actual = matches[0];
-      const mismatches = Object.keys(expected).filter((key) => !isDeepStrictEqual(actual[key], expected[key]));
-      if (mismatches.length > 0) {
-        addIssue('TARGET_STATE_MISMATCH', `Planned target post-state mismatch: ${target.name ?? target.id}`, {
-          pageIndex: target.pageIndex,
-          itemIndex: target.itemIndex ?? target.index,
-          fields: mismatches,
-          expected,
-          actual,
-        });
+    const actual = matches[0];
+    const beforeItem = beforeForAfter.get(actual) ?? null;
+    const matchingSteps = steps.filter((step) => stepMatchesTarget(step, target));
+    const allowedFields = new Set(Object.keys(expected ?? {}));
+    for (const step of matchingSteps) {
+      for (const field of impliedTargetFields(step)) allowedFields.add(field);
+    }
+    const fields = new Set(beforeItem ? [...Object.keys(beforeItem), ...Object.keys(actual)] : []);
+    const mismatches = [...fields].filter((field) => (
+      !isDeepStrictEqual(beforeItem?.[field], actual[field]) && !allowedFields.has(field)
+    ));
+    for (const field of Object.keys(expected ?? {})) {
+      if (!isDeepStrictEqual(actual[field], expected[field]) && !mismatches.includes(field)) {
+        mismatches.push(field);
       }
+    }
+    if (mismatches.length > 0) {
+      addIssue('TARGET_STATE_MISMATCH', `Planned target post-state mismatch: ${target.name ?? target.id}`, {
+        pageIndex: target.pageIndex,
+        itemIndex: target.itemIndex ?? target.index,
+        fields: mismatches,
+        expected,
+        actual,
+      });
     }
   }
 

@@ -1,49 +1,50 @@
 {
-  "name": "indesign-mcp-server",
-  "version": "2.0.0",
-  "description": "A comprehensive Model Context Protocol (MCP) server for Adobe InDesign automation with 50+ professional tools including document management, text/graphics creation, style management, and image scaling",
+  "name": "indesign-aaron",
+  "version": "1.1.0",
+  "description": "InDesignAaronV1.1 - Model Context Protocol server, portable skill runtime and Copilot bridge for Adobe InDesign with direct page view and layout editing",
   "main": "src/index.js",
   "type": "module",
+  "bin": "build/indesign-aaron.cjs",
   "scripts": {
     "start": "node src/index.js",
     "bridge": "node bridge/server.js",
     "dev": "node --inspect src/index.js",
-    "build": "echo 'No build step required for Node.js'",
-    "test": "node --test tests/test-chat-agent.js",
-    "test:handlers": "node tests/test-all-handlers.js"
+    "embed": "node scripts/embed-assets.mjs",
+    "build": "node scripts/embed-assets.mjs && node scripts/build-exe.mjs",
+    "build:bundle": "node scripts/build-exe.mjs --no-exe",
+    "smoke": "node scripts/smoke-mcp.mjs",
+    "test": "node --test tests/test-chat-agent.js tests/test-export-images.js tests/test-skill-registry.js tests/test-units.js tests/test-plan-schema.js tests/test-target-bound-handlers.js tests/test-inspector.js tests/test-structural-checks.js tests/test-inspection-handlers.js tests/test-skill-runtime.js tests/test-mcp-skills.js tests/test-page-renderer.js tests/test-visual-review.js tests/test-verifier.js tests/test-backup.js tests/test-bridge-auth.js tests/test-selftest.js",
+    "test:handlers": "node tests/test-all-handlers.js",
+    "test:live": "node tests/unified-test-runner.js"
   },
   "keywords": [
     "mcp",
     "model-context-protocol",
     "indesign",
     "adobe",
+    "uxp",
     "automation",
-    "publishing",
-    "desktop-publishing",
+    "layout",
+    "skills",
     "claude",
-    "ai",
-    "llm",
-    "design-automation",
-    "document-creation",
-    "layout-automation"
+    "ai"
   ],
   "author": "lucdesign",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "express": "^4.18.0",
-    "uuid": "^9.0.0",
     "ws": "^8.0.0"
   },
+  "devDependencies": {
+    "esbuild": "^0.25.12"
+  },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lucdesign/indesign-mcp-server.git"
-  },
-  "bugs": {
-    "url": "https://github.com/lucdesign/indesign-mcp-server/issues"
   },
   "homepage": "https://github.com/lucdesign/indesign-mcp-server#readme"
 }

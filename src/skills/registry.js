@@ -1,15 +1,14 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { embeddedSkillFiles } from '../assets/embeddedSkills.js';
 
-const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const DEFAULT_DIR = resolve(__dirname, '../../skills');
 const OPEN_DOCUMENT = 'A document is open in InDesign.';
 const REQUIRED_FORBIDDEN_TOOLS = [
   'execute_indesign_code',
   'close_document',
   'print_book',
   'package_document',
+  'save_document',
 ];
 const MARKDOWN_SECTIONS = [
   'When to use',
@@ -30,7 +29,11 @@ const EXPECTED_SKILLS = [
     id: 'safe-layout-edit',
     name: 'Safe Layout Edit',
     defaultRisk: 'low',
-    allowedTools: ['inspect_layout', 'plan_edit', 'apply_edit_plan', 'verify_layout', 'rollback_edit'],
+    allowedTools: [
+      'inspect_layout', 'plan_edit', 'apply_edit_plan', 'verify_layout', 'rollback_edit',
+      'move_page_item', 'resize_page_item', 'set_page_item_properties', 'edit_text_frame',
+      'apply_paragraph_style', 'apply_character_style', 'apply_object_style', 'apply_color',
+    ],
   },
   {
     id: 'text-typography-edit',
@@ -82,6 +85,42 @@ const EXPECTED_SKILLS = [
 ];
 const EXPECTED_BY_ID = new Map(EXPECTED_SKILLS.map((skill) => [skill.id, skill]));
 
+/**
+ * Skills live in a nearby skills/ folder during development. The packaged
+ * executable has no such folder, so the embedded catalog is used instead.
+ */
+function candidateSkillDirs() {
+  const dirs = [];
+  if (process.env.INDESIGN_AARON_SKILLS_DIR) dirs.push(resolve(process.env.INDESIGN_AARON_SKILLS_DIR));
+  dirs.push(resolve(process.cwd(), 'skills'));
+  if (process.argv[1]) dirs.push(resolve(process.argv[1], '..', '..', 'skills'));
+  dirs.push(resolve(process.execPath, '..', 'skills'));
+  return dirs;
+}
+
+function resolveDefaultDir() {
+  for (const candidate of candidateSkillDirs()) {
+    if (existsSync(join(candidate, 'manifest.json'))) return candidate;
+  }
+  // No catalog on disk: use the embedded files with a virtual directory name.
+  return 'embedded:skills';
+}
+
+const DEFAULT_DIR = resolveDefaultDir();
+
+function readCatalogText(directory, name) {
+  const embeddedOnly = DEFAULT_DIR === 'embedded:skills';
+  if (!embeddedOnly || directory === 'embedded:skills') {
+    // Real catalog on disk: a missing file is a real error, never a fallback.
+    if (directory !== 'embedded:skills') return readFileSync(join(directory, name), 'utf8');
+  }
+  const embedded = embeddedSkillFiles[name];
+  if (typeof embedded !== 'string') {
+    throw new Error(`Missing skill file "${name}". Run scripts/embed-assets.mjs or restore skills/.`);
+  }
+  return embedded;
+}
+
 let cache;
 
 function manifestError(message) {
@@ -93,19 +132,19 @@ function skillError(id, message) {
 }
 
 function readManifest(skillsDir) {
-  const manifestPath = join(skillsDir, 'manifest.json');
   let source;
   try {
-    source = readFileSync(manifestPath, 'utf8');
+    source = readCatalogText(skillsDir, 'manifest.json');
   } catch (error) {
-    throw new Error(`Unable to read skill manifest at ${manifestPath}: ${error.message}`, { cause: error });
+    if (error.message.startsWith('Missing skill file')) throw error;
+    throw new Error(`Unable to read skill manifest: ${error.message}`, { cause: error });
   }
 
   let manifest;
   try {
     manifest = JSON.parse(source);
   } catch (error) {
-    throw new Error(`Invalid skill manifest JSON at ${manifestPath}: ${error.message}`, { cause: error });
+    throw new Error(`Invalid skill manifest JSON: ${error.message}`, { cause: error });
   }
 
   if (!manifest || typeof manifest !== 'object' || !Array.isArray(manifest.skills)) {
@@ -184,14 +223,10 @@ function validateMetadata(meta, index) {
 }
 
 function readMarkdown(skillsDir, id) {
-  const markdownPath = join(skillsDir, `${id}.md`);
   try {
-    return readFileSync(markdownPath, 'utf8');
+    return readCatalogText(skillsDir, `${id}.md`);
   } catch (error) {
-    if (error.code === 'ENOENT') {
-      throw new Error(`Missing Markdown file for skill "${id}": ${markdownPath}`, { cause: error });
-    }
-    throw new Error(`Unable to read Markdown file for skill "${id}": ${error.message}`, { cause: error });
+    throw new Error(`Missing Markdown file for skill "${id}": ${error.message}`, { cause: error });
   }
 }
 
@@ -289,8 +324,12 @@ function cloneDefinition(skill) {
   };
 }
 
+export function resolveSkillsDir() {
+  return DEFAULT_DIR;
+}
+
 export async function loadSkillCatalog(skillsDir = DEFAULT_DIR) {
-  const resolvedDir = resolve(skillsDir);
+  const resolvedDir = String(skillsDir).startsWith('embedded:') ? String(skillsDir) : resolve(skillsDir);
   if (cache && resolvedDir === DEFAULT_DIR) return cache.map(cloneDefinition);
 
   const manifest = readManifest(resolvedDir);

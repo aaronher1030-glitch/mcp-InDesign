@@ -11,6 +11,7 @@ const FORBIDDEN_TOOLS = [
   'close_document',
   'print_book',
   'package_document',
+  'save_document',
 ];
 const EXPECTED_SKILLS = [
   {
@@ -18,6 +19,8 @@ const EXPECTED_SKILLS = [
     name: 'Safe Layout Edit',
     allowedTools: [
       'inspect_layout', 'plan_edit', 'apply_edit_plan', 'verify_layout', 'rollback_edit',
+      'move_page_item', 'resize_page_item', 'set_page_item_properties', 'edit_text_frame',
+      'apply_paragraph_style', 'apply_character_style', 'apply_object_style', 'apply_color',
     ],
     defaultRisk: 'low',
     qualityCriteria: [
@@ -285,7 +288,7 @@ const invalidMetadataCases = [
   ['rejects a missing open-document precondition', (manifest) => { manifest.skills[0].preconditions = []; }, /preconditions/i],
   ['rejects empty allowed tools', (manifest) => { manifest.skills[0].allowedTools = []; }, /allowedTools/i],
   ['rejects duplicate allowed tools', (manifest) => { manifest.skills[0].allowedTools.push('inspect_layout'); }, /allowedTools/i],
-  ['rejects an extra allowed tool', (manifest) => { manifest.skills[0].allowedTools.push('save_document'); }, /allowedTools/i],
+  ['rejects an extra allowed tool', (manifest) => { manifest.skills[0].allowedTools.push('save_document'); }, /allowedTools|forbidden tools cannot be allowed/i],
   ['rejects execute_indesign_code in allowed tools', (manifest) => { manifest.skills[0].allowedTools.push('execute_indesign_code'); }, /execute_indesign_code|forbidden/i],
   ['rejects a missing required forbidden tool', (manifest) => { manifest.skills[0].forbiddenTools.pop(); }, /forbiddenTools/i],
   ['rejects a high default risk for a low-risk skill', (manifest) => { manifest.skills[0].defaultRisk = 'high'; }, /defaultRisk/i],

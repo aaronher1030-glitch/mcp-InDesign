@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>InDesign Copilot workflow demo</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 1280px; height: 720px; overflow: hidden; background: #17191d; color: #f4f5f7; font-family: "Segoe UI", Arial, sans-serif; }
+  button, textarea { font: inherit; }
+  .app { display: grid; grid-template-columns: 58px 1fr 374px; width: 1280px; height: 720px; }
+  .rail { background: #202226; border-right: 1px solid #34373d; display: flex; align-items: center; flex-direction: column; gap: 18px; padding-top: 18px; }
+  .rail .mark { width: 30px; height: 30px; border-radius: 7px; background: #45c8d4; color: #102328; display: grid; place-items: center; font-weight: 800; }
+  .rail .tool { width: 30px; height: 30px; border: 1px solid #444850; border-radius: 6px; display: grid; place-items: center; color: #aeb4bd; font-size: 15px; }
+  .workspace { position: relative; background: #2a2d32; overflow: hidden; }
+  .menubar { height: 42px; background: #24262b; border-bottom: 1px solid #3a3d44; display: flex; align-items: center; gap: 18px; padding: 0 16px; color: #c8ccd3; font-size: 12px; }
+  .menubar strong { color: #fff; margin-right: auto; }
+  .canvas { position: absolute; inset: 42px 0 28px; display: grid; place-items: center; background: radial-gradient(circle at 50% 45%, #343840, #272a2f 72%); }
+  .page { position: relative; width: 476px; height: 604px; background: #f7f5ef; color: #18232b; box-shadow: 0 18px 50px #0008; overflow: hidden; }
+  .page .kicker { position: absolute; left: 42px; top: 44px; color: #247b88; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
+  .headline { position: absolute; left: 42px; top: 86px; width: 392px; font-size: 42px; line-height: 1.03; font-weight: 750; letter-spacing: -1.6px; }
+  .rule { position: absolute; left: 42px; top: 210px; width: 52px; height: 5px; background: #45c8d4; }
+  .body { position: absolute; left: 42px; top: 240px; width: 250px; color: #52616b; font-size: 12px; line-height: 1.65; }
+  .art { position: absolute; right: 42px; top: 238px; width: 112px; height: 148px; background: #45c8d4; }
+  .art:after { content: ""; position: absolute; inset: 18px; border: 1px solid #ffffffaa; }
+  .footer { position: absolute; left: 42px; bottom: 35px; font-size: 10px; color: #71808a; letter-spacing: 1px; }
+  .statusbar { position: absolute; bottom: 0; left: 0; right: 0; height: 28px; background: #24262b; border-top: 1px solid #3a3d44; display: flex; align-items: center; padding: 0 14px; color: #9da4ae; font-size: 11px; }
+  .panel { background: #24262b; border-left: 1px solid #3a3d44; display: flex; flex-direction: column; }
+  .panel header { height: 50px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1px solid #3a3d44; }
+  .panel h1 { font-size: 14px; margin: 0; flex: 1; }
+  .connected { color: #78d89a; font-size: 11px; }
+  .panel header button { background: #30333a; color: #d9dde3; border: 1px solid #454951; border-radius: 5px; padding: 4px 7px; font-size: 11px; }
+  .log { flex: 1; overflow: hidden; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 94%; font-size: 12px; line-height: 1.45; white-space: pre-wrap; }
+  .user { align-self: flex-end; background: #3d5a80; border-radius: 9px 9px 2px 9px; padding: 9px 11px; }
+  .assistant { align-self: flex-start; color: #e7e9ed; }
+  .tool { border-left: 2px solid #45c8d4; background: #2b2e35; padding: 7px 9px; color: #bfc6cf; font-size: 11px; border-radius: 0 5px 5px 0; }
+  .tool b { color: #73dbe4; font-weight: 600; }
+  .approval { border: 1px solid #b98a2e; background: #3a3223; border-radius: 7px; padding: 10px; display: none; }
+  .approval h2 { margin: 0 0 5px; color: #f0c674; font-size: 12px; }
+  .approval p { margin: 0 0 4px; color: #e6d7b7; font-size: 11px; }
+  .actions { display: flex; gap: 7px; margin-top: 8px; }
+  .actions button { border: 1px solid #5d9970; background: #4a7c59; color: white; border-radius: 5px; padding: 5px 8px; font-size: 11px; }
+  .actions button.cancel { background: #393a3d; border-color: #55575c; color: #ddd; }
+  .verify { display: none; border: 1px solid #3e6f52; background: #24392d; border-radius: 7px; padding: 9px 10px; color: #cdebd7; font-size: 11px; }
+  .verify b { color: #83e0a4; }
+  .composer { margin: 0 12px 12px; display: flex; gap: 7px; }
+  .composer textarea { flex: 1; height: 48px; resize: none; background: #30333a; border: 1px solid #484c54; color: #fff; border-radius: 6px; padding: 8px; font-size: 12px; }
+  .composer button { width: 58px; background: #45c8d4; color: #102328; border: 0; border-radius: 6px; font-weight: 700; }
+  .activity { height: 22px; padding: 0 14px; color: #9da4ae; font-size: 11px; }
+  #cursor { position: fixed; width: 18px; height: 24px; z-index: 20; filter: drop-shadow(0 2px 2px #0008); transform-origin: top left; }
+  #cursor svg { width: 18px; height: 24px; }
+  #toast { position: fixed; left: 320px; bottom: 46px; z-index: 30; background: #162d23; color: #a8efbe; border: 1px solid #4b9267; border-radius: 7px; padding: 9px 13px; font-size: 12px; opacity: 0; transform: translateY(8px); }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail"><div class="mark">Id</div><div class="tool">T</div><div class="tool">□</div><div class="tool">↔</div><div class="tool">◉</div></aside>
+  <main class="workspace">
+    <div class="menubar"><strong>Brief.indd</strong><span>File</span><span>Edit</span><span>Layout</span><span>Type</span><span>Object</span><span>100%</span></div>
+    <div class="canvas"><div class="page"><div class="kicker">FIELD NOTES / 01</div><div class="headline" id="headline">The Future of<br>Local AI</div><div class="rule" id="rule"></div><div class="body">Private, capable and close to the work. A new generation of creative tools is moving from the cloud to the desktop.</div><div class="art"></div><div class="footer">INDESIGN COPILOT · SAFE LAYOUT EDIT</div></div></div>
+    <div class="statusbar"><span>Page 1 of 1</span><span style="margin-left:auto">A4 · 210 × 297 mm</span></div>
+  </main>
+  <aside class="panel">
+    <header><h1>InDesign Copilot</h1><span class="connected">● Connected</span><button>Model</button><button>Clear</button></header>
+    <div class="log">
+      <div class="msg user" id="userMsg" style="opacity:0">Move the headline down 8 mm and keep it inside the margins.</div>
+      <div class="tool" id="inspectTool" style="opacity:0"><b>inspect_layout</b><br>Page 1 · 4 items · fingerprint 8f2a…c91</div>
+      <div class="tool" id="planTool" style="opacity:0"><b>plan_edit</b><br>Low risk · 1 target · reversible</div>
+      <div class="approval" id="approval"><h2>Approval required</h2><p>High-risk layout plan</p><p>Page 1 · exact version 1</p><div class="actions"><button id="approveBtn">Approve and apply</button><button class="cancel">Cancel</button></div></div>
+      <div class="tool" id="applyTool" style="opacity:0"><b>apply_edit_plan</b><br>Target revalidated · applying 1 step</div>
+      <div class="verify" id="verify"><b>✓ Structural checks passed</b><br>Target matched · no overflow · no unintended changes<br><b>✓ Visual review passed</b></div>
+      <div class="msg assistant" id="doneMsg" style="opacity:0">Edit verified. The headline moved down 8 mm and remains inside the margins. Rollback is available.</div>
+    </div>
+    <div class="activity" id="activity">Ready</div>
+    <form class="composer" onsubmit="return false"><textarea id="input" placeholder="Move the headline down 8 mm"></textarea><button id="sendBtn">Send</button></form>
+  </aside>
+</div>
+<div id="cursor"><svg viewBox="0 0 18 24"><path d="M1 1 L16 13 L9 14 L6 22 Z" fill="#fff" stroke="#111" stroke-width="1.5"/></svg></div>
+<div id="toast">✓ Edit verified · rollback available</div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const clamp = (v) => Math.max(0, Math.min(1, v));
+  const ease = (v) => { v = clamp(v); return v * v * (3 - 2 * v); };
+  const show = (id, visible) => { $(id).style.opacity = visible ? '1' : '0'; };
+  let typed = '';
+  const prompt = 'Move the headline down 8 mm and keep it inside the margins.';
+  function setTime(ms) {
+    const t = ms / 1000;
+    show('userMsg', t >= 4.6);
+    show('inspectTool', t >= 7.0);
+    show('planTool', t >= 9.0);
+    show('applyTool', t >= 11.5);
+    $('verify').style.display = t >= 17.0 ? 'block' : 'none';
+    show('verify', t >= 17.0);
+    show('doneMsg', t >= 21.0);
+    const move = ease((t - 11.7) / 2.2);
+    $('headline').style.transform = `translateY(${move * 30}px)`;
+    $('rule').style.transform = `translateY(${move * 30}px)`;
+    const chars = Math.floor(clamp((t - 1.0) / 2.8) * prompt.length);
+    if (t < 4.6) { typed = prompt.slice(0, chars); $('input').value = typed; }
+    else { $('input').value = ''; }
+    let x = 1135, y = 650;
+    if (t >= 1 && t < 4.6) { x = 1070; y = 650 + Math.sin(t * 8) * 2; }
+    if (t >= 4.6 && t < 11.5) { x = 1195; y = 620; }
+    if (t >= 11.5) { x = 1195; y = 620; }
+    $('cursor').style.transform = `translate(${x}px, ${y}px) scale(${t >= 4.2 && t < 4.8 ? .86 : 1})`;
+    $('sendBtn').style.transform = t >= 4.2 && t < 4.8 ? 'scale(.94)' : 'scale(1)';
+    $('activity').textContent = t < 4.6 ? 'Typing a precise edit…' : t < 7 ? 'Inspecting document…' : t < 11.5 ? 'Plan validated · low risk · auto-approved' : t < 17 ? 'Applying and revalidating…' : t < 21 ? 'Running structural and visual checks…' : 'Ready';
+    $('toast').style.opacity = t >= 23 ? '1' : '0';
+    $('toast').style.transform = t >= 23 ? 'translateY(0)' : 'translateY(8px)';
+  }
+  window.setDemoTime = setTime;
+  setTime(0);
+</script>
+</body>
+</html>

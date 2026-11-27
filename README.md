@@ -1,238 +1,244 @@
-# InDesign UXP MCP Server
+# InDesignAaronV1.1
 
-This copy adds an **InDesign Copilot** chat panel on top of [theloniuser/indesign-uxp-server](https://github.com/theloniuser/indesign-uxp-server). The panel is the conversation. The same tools still move, resize, and inspect page items, and Cursor can keep using the MCP server.
+An InDesign MCP server, portable skill runtime and in-app Copilot panel in one
+Windows executable. It drives a live Adobe InDesign document through a UXP
+plugin: inspect the layout, move and resize objects, edit text and styles, view
+rendered pages, and verify every change — with reviewable plans and rollback.
 
-The model is whichever one your API key can call. Choose OpenAI-compatible (OpenAI, OpenRouter, Groq, Together, Ollama, LM Studio, or Gemini’s OpenAI endpoint) or Anthropic, then type the model id. The key stays in the panel and is sent only to the base URL you enter.
+Built on [theloniuser/indesign-uxp-server](https://github.com/theloniuser/indesign-uxp-server),
+which forked [zachshallbetter/indesign-mcp-server](https://github.com/zachshallbetter/indesign-mcp-server)
+(the AppleScript original) and moved execution inside InDesign via UXP.
 
-### Chat panel on Windows
+## Demo
 
-1. Install [Node.js 18+](https://nodejs.org/) and Adobe InDesign 2024 or later.
-2. In this folder run `npm install`.
-3. Start the bridge, and leave that window open:
+Simulated walkthrough of the included Copilot UI and safety workflow—not a live
+InDesign recording. The editable source is in
+[docs/assets/demo.html](docs/assets/demo.html).
+
+![InDesign Copilot inspecting, planning, applying, and verifying a precise layout edit](docs/assets/indesign-copilot-demo.gif)
+
+[Watch the 28-second MP4](docs/assets/indesign-copilot-demo.mp4).
+
+`InDesignAaronV1.1.exe` is the whole product:
+
+- **MCP stdio server** — 136 low-level tools + 7 high-level skill tools for any
+  MCP client (Claude Desktop, Cursor, Windsurf, custom clients).
+- **Copilot bridge** — HTTP `127.0.0.1:3000` and WebSocket `127.0.0.1:3001`
+  for the InDesign panel.
+- **Portable skill catalog** — six skills with risk policy, approval,
+  verification and rollback.
+- **Direct view** — `preview_layout` renders pages to PNG and opens them in the
+  system viewer so you can see the layout without leaving the chat.
+- **Self-installing plugin** — `--install-plugin` writes the UXP plugin next to
+  the executable.
+
+The same binary is both server and bridge, so there is no second process to
+start and no Node installation required on the target machine.
+
+---
+
+## Requirements
+
+- Windows 10/11 (the built executable is `win-x64`).
+- Adobe InDesign 2022 (18.0) or newer with UXP plugin support.
+  InDesign 2024 was detected and used on the machine this was built on.
+- Adobe UXP Developer Tool, to load the plugin once.
+
+## Quick start
+
+1. Put `InDesignAaronV1.1.exe` anywhere, for example
+   `C:\Users\you\Apps\InDesignAaronV1.1\`.
+2. Install the plugin:
+
+   ```powershell
+   .\InDesignAaronV1.1.exe --install-plugin
+   ```
+
+   This writes `plugin\manifest.json`, `plugin\index.html` and `plugin\index.js`
+   next to the executable.
+3. Open the UXP Developer Tool → **Add Plugin** → choose that `manifest.json` →
+   **Load**.
+4. Start the bridge:
+
+   ```powershell
+   .\InDesignAaronV1.1.exe --bridge
+   ```
+
+   Leave that window open. Open InDesign → **Window → Plugins → InDesign Copilot**.
+   The panel connects to the bridge on its own within a few seconds; its header
+   then says **Connected**.
+5. In the panel click **Model**, pick OpenAI-compatible or Anthropic, enter the
+   model id and API key, then **Save**. The key is held in memory for the active
+   chat session, is sent only to the base URL you enter, and is not persisted.
+6. Ask for a change, for example *"Move the headline down 8 mm and keep it
+   inside the margins."* The panel inspects the layout first, then edits it and
+   shows the result.
+
+Check the installation at any time:
 
 ```powershell
-npm run bridge
+.\InDesignAaronV1.1.exe --doctor
+.\InDesignAaronV1.1.exe --print-config
 ```
 
-4. Install [Adobe UXP Developer Tool](https://developer.adobe.com/indesign/uxp/guides/), add the `plugin` folder, and load it into InDesign.
-5. In InDesign choose **Window → Plugins → InDesign Copilot**. The header should say **Connected**.
-6. Click **Model**, enter the provider, base URL if it is not the default, model id, and API key, then **Save**.
-7. With a document open, ask it to move or restyle an object. It lists the page items first, then edits them in the live layout.
+To prove the whole chain works with InDesign open, run the live self test. It
+waits for the plugin to connect (60 seconds by default), then inspects the open
+document and renders one page in the system image viewer:
 
-Cursor can use the same bridge. Add this MCP server with `node` and the full path to `src/index.js`. Do not start a second bridge; `npm start` reuses the one already running.
-
-> **Forked from** [zachshallbetter/indesign-mcp-server](https://github.com/zachshallbetter/indesign-mcp-server) — rewritten to use Adobe's UXP plugin platform instead of AppleScript.
-
-A Model Context Protocol (MCP) server that gives AI assistants direct, native control over Adobe InDesign via a UXP plugin bridge. ~130 tools covering the full InDesign feature set — documents, pages, text, graphics, styles, master spreads, books, and export.
-
----
-
-## Why UXP vs AppleScript
-
-This server is a ground-up rewrite of the AppleScript-based [indesign-mcp-server](https://github.com/zachshallbetter/indesign-mcp-server). The execution model is fundamentally different.
-
-| | AppleScript (original) | UXP (this fork) |
-|---|---|---|
-| **Platform** | macOS only | macOS + Windows |
-| **Execution path** | Node → temp JSX file → AppleScript → InDesign | Node → HTTP → WebSocket → InDesign plugin |
-| **Speed** | Slow — 3 hops, disk write per call | Fast — direct in-process call |
-| **Reliability** | Flaky — breaks if InDesign loses focus or system dialogs appear | Stable — not affected by focus or system state |
-| **Return values** | Strings only (last evaluated expression) | Full structured JSON objects |
-| **JS version** | ExtendScript (ES3 — no `const`, arrow functions, or `async/await`) | Modern JS (ES2015+ — `async/await`, destructuring, arrow functions) |
-| **Error messages** | Cryptic AppleScript/OSA errors | Structured JSON with clear error strings |
-| **String handling** | Manual `escapeJsxString()` for every value | `JSON.stringify()` throughout — safe and simple |
-| **Enums** | Magic strings like `'PDF_TYPE'` | Typed enums via `require('indesign').ExportFormat.pdfType` |
-| **Async support** | Not supported — synchronous only | Native `await` (e.g. `await doc.filePath`) |
-| **Permissions** | macOS Automation + Accessibility in System Settings | None beyond InDesign plugin install |
-| **Future-proofing** | ❌ Adobe is deprecating ExtendScript/CEP | ✅ UXP is Adobe's official modern platform |
-
-**The short version**: The AppleScript version puppets InDesign from the outside via macOS automation, writing temp files and hoping nothing interrupts the chain. This version runs _inside_ InDesign as a first-class plugin — faster, more reliable, cross-platform, and built on the platform Adobe is investing in going forward.
-
----
-
-## How It Works
-
-```
-Claude / MCP Client
-       │
-       ▼
-  MCP Server (Node.js)
-       │  POST /execute
-       ▼
-  Bridge HTTP Server (port 3000)
-       │  WebSocket
-       ▼
-  UXP Plugin (inside InDesign)
-       │  runs as async IIFE with `app` in scope
-       ▼
-  InDesign DOM
+```powershell
+.\InDesignAaronV1.1.exe --selftest
+.\InDesignAaronV1.1.exe --selftest --timeout 120
 ```
 
-The UXP plugin maintains a persistent WebSocket connection to the bridge. When a tool is called, the handler sends a JS code string to the bridge, which forwards it to the plugin. The plugin runs it as `new Function('app', 'return (async () => { CODE })()')` and returns the result as JSON.
+It exits with code 0 and prints the inspection id and the preview PNG paths when
+both steps succeed, and with code 1 with a `SELFTEST_TIMEOUT` / `SELFTEST_FAILED`
+reason when they do not.
 
----
+## Use from an MCP client
 
-## Prerequisites
-
-- Adobe InDesign 2024+ (UXP plugin support required)
-- Node.js 18+
-- macOS or Windows
-
----
-
-## Setup
-
-### 1. Install the UXP Plugin
-
-Load the plugin via the UXP Developer Tool or InDesign's plugin manager:
-
-```
-plugin/
-├── index.js        # Plugin entry point + WebSocket client
-└── manifest.json   # Plugin manifest
-```
-
-### 2. Start the Bridge
-
-```bash
-# Kill any existing bridge processes
-lsof -ti:3001 | xargs kill 2>/dev/null
-lsof -ti:3000 | xargs kill 2>/dev/null
-
-# Start the bridge
-cd bridge && node server.js
-```
-
-### 3. Connect the Plugin
-
-In InDesign: **Window → Plugins → InDesign Copilot**
-
-The panel should show: `Connected`
-
-### 4. Start the MCP Server
-
-```bash
-npm install
-npm start
-```
-
-### 5. Configure Claude
-
-Add to `~/.claude.json` (or your MCP client config):
+`--print-config` prints the exact block. For Claude Desktop
+(`%APPDATA%\Claude\claude_desktop_config.json`) or Cursor:
 
 ```json
 {
   "mcpServers": {
     "indesign": {
-      "command": "node",
-      "args": ["/path/to/indesign-uxp-server/src/index.js"]
+      "command": "C:\\path\\to\\InDesignAaronV1.1.exe"
     }
   }
 }
 ```
 
----
+The client starts the executable without a terminal, so it runs in MCP mode and
+also starts the bridge in-process. Only one process may own ports 3000/3001; if
+you already ran `--bridge`, the server reuses it.
 
-## Testing
+When started with no arguments from a terminal, the executable prints help and
+runs as a bridge.
 
-```bash
-# Quick sanity check (4 core tools)
-node tests/test-uxp-handlers.js
+## MCP surface
 
-# Full suite (27 tests across all handler categories)
-node tests/test-all-handlers.js
+### High-level skill tools
+
+| Tool | Purpose |
+|---|---|
+| `inspect_layout` | Read-only snapshot: document, pages, items, styles, colors, layers, validation, fingerprint |
+| `plan_edit` | Validate and version a structured edit plan; classify risk |
+| `apply_edit_plan` | Revalidate, back up if high risk, apply, auto-rollback on failure |
+| `verify_layout` | Structural checks plus optional visual review |
+| `rollback_edit` | Reverse the journal or restore the guarded backup |
+| `preview_layout` | Direct view: render pages to PNG and open the first one |
+| `list_skills` | Show the skill catalog and allowed tools |
+
+### Skills
+
+`safe-layout-edit`, `text-typography-edit`, `align-distribute`,
+`image-reframe`, `style-consistency`, `multi-page-consistency`.
+
+Each is exposed as an MCP prompt (`indesign.safe_layout_edit`, …), as a
+resource (`indesign://skills/<id>`), and as an Agent Skill in `skills/*.md`.
+Skills forbid `execute_indesign_code`, `close_document`, `print_book` and
+`package_document`, and each one lists exactly which low-level tools it may use.
+
+### Low-level tools
+
+143 tools in total: documents, pages, spreads, master spreads, text and tables,
+styles, colors, graphics, layers, page items, groups, books, export and
+utilities. The MCP client sees the same names as before this release.
+
+## Workflow and safety
+
+1. **Inspect** — `inspect_layout` returns `inspectionId` and a document
+   fingerprint.
+2. **Plan** — the model authors `targets` (pageIndex, itemIndex, before-state)
+   and `steps` (tool + arguments). The server validates, normalizes and versions
+   the plan and infers target fingerprints. A different plan version voids an
+   approval.
+3. **Classify** — low risk means one page, at most five existing targets, and
+   only reversible allowlisted steps. Everything else is high risk and returns
+   `approval_required`. The panel shows an approval card with the summary and
+   affected pages. External MCP clients call `apply_edit_plan` with the same
+   `planId` and `expectedVersion`; the server requests explicit human approval
+   through MCP elicitation and authorizes the exact version server-side. Models
+   cannot self-approve, and clients without elicitation support cannot apply
+   high-risk plans.
+4. **Apply** — the document is re-inspected immediately before execution; any
+   change since inspection aborts with `STALE_PLAN`. High-risk plans first copy
+   the saved `.indd` into the session artifact folder (a saved document is
+   required).
+5. **Verify** — structural checks always run and detect unexpected additions,
+   removals, renames, overset text, out-of-bounds content, missing links/fonts
+   and duplicate styles. Visual review is optional; without it the result is
+   `structurally_checked_only`, never a full pass.
+6. **Rollback** — low-risk plans replay inverse journal steps in reverse;
+   high-risk plans restore the backup, and only if the document has not changed
+   since the plan was applied (`ROLLBACK_CONFLICT` otherwise).
+
+The original document is never saved automatically. API keys are sent only to
+the model endpoint you configured and are never written to plans, artifacts or
+logs.
+
+### Optional bridge token
+
+Set `BRIDGE_TOKEN` before starting to require
+`Authorization: Bearer <token>` on `/execute`, `/chat` and `/status`:
+
+```powershell
+$env:BRIDGE_TOKEN = "a-long-random-string"
+.\InDesignAaronV1.1.exe --bridge
 ```
 
-Current status: **27/27 passing** across all handler categories.
+Enter the same token in the panel's **Model** section. Without it the bridge is
+open to any local process, which is fine on a single-user machine but not on a
+shared one.
 
----
+## Build from source
 
-## Tools
+Requires Node.js 20+ to run from source and Node.js 24+ to build the executable,
+plus the dependencies in `package.json`.
 
-### Documents
-`create_document` `open_document` `save_document` `close_document` `get_document_info` `get_document_preferences` `set_document_preferences` `get_document_elements` `get_document_styles` `get_document_colors` `get_document_layers` `get_document_stories` `get_document_hyperlinks` `create_document_hyperlink` `get_document_sections` `create_document_section` `get_document_grid_settings` `set_document_grid_settings` `get_document_layout_preferences` `set_document_layout_preferences` `get_document_xml_structure` `export_document_xml` `preflight_document` `validate_document` `cleanup_document` `data_merge` `save_document_to_cloud` `open_cloud_document` `view_document`
-
-### Pages & Spreads
-`add_page` `delete_page` `duplicate_page` `move_page` `get_page_info` `set_page_properties` `adjust_page_layout` `resize_page` `reframe_page` `navigate_to_page` `select_page` `zoom_to_page` `set_page_background` `create_page_guides` `place_file_on_page` `place_xml_on_page` `get_page_content_summary` `snapshot_page_layout` `delete_page_layout_snapshot` `delete_all_page_layout_snapshots` `list_spreads` `get_spread_info` `duplicate_spread` `move_spread` `delete_spread` `set_spread_properties` `create_spread_guides` `place_file_on_spread` `place_xml_on_spread` `select_spread` `get_spread_content_summary`
-
-### Text & Tables
-`create_text_frame` `edit_text_frame` `create_table` `populate_table` `find_replace_text` `find_text_in_document`
-
-### Styles & Colors
-`create_paragraph_style` `apply_paragraph_style` `create_character_style` `list_styles` `create_color_swatch` `list_color_swatches` `apply_color` `create_object_style` `list_object_styles` `apply_object_style`
-
-### Graphics & Shapes
-`place_image` `get_image_info` `create_rectangle` `create_ellipse` `create_polygon`
-
-### Layers
-`create_layer` `set_active_layer` `list_layers` `organize_document_layers`
-
-### Page Items
-`get_page_item_info` `select_page_item` `move_page_item` `resize_page_item` `set_page_item_properties` `duplicate_page_item` `delete_page_item` `list_page_items`
-
-### Groups
-`create_group` `create_group_from_items` `ungroup` `get_group_info` `add_item_to_group` `remove_item_from_group` `list_groups` `set_group_properties`
-
-### Master Spreads
-`create_master_spread` `list_master_spreads` `delete_master_spread` `duplicate_master_spread` `apply_master_spread` `get_master_spread_info` `create_master_text_frame` `create_master_rectangle` `create_master_guides` `detach_master_items` `remove_master_override`
-
-### Export & Output
-`export_pdf` `export_images` `export_epub` `package_document`
-
-### Books
-`create_book` `open_book` `list_books` `add_document_to_book` `synchronize_book` `repaginate_book` `export_book` `package_book` `preflight_book` `print_book` `get_book_info` `set_book_properties` `update_all_cross_references` `update_all_numbers` `update_chapter_and_paragraph_numbers`
-
-### Utility
-`execute_indesign_code` `get_session_info` `clear_session` `help`
-
----
-
-## Architecture
-
-```
-src/
-├── core/
-│   ├── InDesignMCPServer.js    # MCP server, tool registration
-│   ├── scriptExecutor.js       # executeViaUXP() — POSTs to bridge
-│   └── sessionManager.js       # Page dimension tracking, smart positioning
-├── handlers/
-│   ├── documentHandlers.js
-│   ├── pageHandlers.js
-│   ├── textHandlers.js
-│   ├── styleHandlers.js
-│   ├── graphicsHandlers.js
-│   ├── masterSpreadHandlers.js
-│   ├── pageItemHandlers.js
-│   ├── groupHandlers.js
-│   ├── bookHandlers.js
-│   ├── exportHandlers.js
-│   └── utilityHandlers.js
-├── types/                      # MCP tool schema definitions
-└── utils/stringUtils.js
-
-bridge/
-└── server.js                   # HTTP (port 3000) + WebSocket (port 3001) bridge
-
-plugin/
-├── index.js                    # UXP plugin — runs code inside InDesign
-└── manifest.json
-
-tests/
-├── test-uxp-handlers.js        # 4 core handler tests
-└── test-all-handlers.js        # 27-test comprehensive suite
+```powershell
+npm install
+npm test                # 200+ automated tests, no InDesign required
+npm run build           # embeds assets, bundles, builds ..\InDesignAaronV1.1.exe
+npm run smoke           # MCP stdio handshake against the bundle
 ```
 
-### Key UXP API Notes
+`npm start` runs the source server; `npm run bridge` runs the bridge alone.
+The bundle is `build/indesign-aaron.cjs`; the executable is produced with
+Node's SEA (`--build-sea`) from that bundle, so no external packer is needed.
 
-- InDesign collections require `.item(n)` — bracket access `[n]` returns undefined
-- `doc.filePath` is async — always `await` it in UXP code
-- `exportFile(format, path)` — format arg is **first** (same as ExtendScript)
-- Enums via `require('indesign')`: `ExportFormat.pdfType`, `ColorModel.process`, etc.
-- Path strings work directly for `place()` and `exportFile()` — no UXP storage API needed
-- Code runs as `async IIFE` — use `return` to return values, `await` works natively
+### Layout
 
----
+```
+src/core/            MCP server, tool dispatch, UXP executor
+src/handlers/        ~136 low-level InDesign handlers
+src/skills/          catalog, plan schema, inspector, journal, backup, runtime, protocol
+src/quality/         structural checks, page renderer, visual review, verifier
+src/chat/            Copilot model adapters and tool loop
+src/assets/          generated embedded skills and plugin files
+bridge/server.js     HTTP + WebSocket relay (importable and standalone)
+plugin/              Adobe UXP panel (chat, approval card, settings)
+skills/              portable skill catalog (*.md + manifest.json)
+scripts/             embed-assets, build-exe, smoke-mcp
+tests/               node --test suites
+```
+
+## Troubleshooting
+
+- **Panel says "Bridge off"** — start `InDesignAaronV1.1.exe --bridge`; the
+  panel reconnects every 3 seconds.
+- **"Plugin not connected"** — load the plugin in the UXP Developer Tool and
+  open Window → Plugins → InDesign Copilot.
+- **No document** — most tools need an open document; `create_document` is
+  available if you want a new one.
+- **High-risk plan needs a saved document** — save the `.indd` first so the
+  backup can be made.
+- **Ports busy** — stop the other bridge instance, or set `BRIDGE_TOKEN`
+  consistently so both sides use the same configuration.
+- **Visual review unavailable** — the configured model cannot accept images;
+  the result is reported as structural-only.
 
 ## License
 
-MIT
+MIT. Original servers by zachshallbetter and theloniuser.

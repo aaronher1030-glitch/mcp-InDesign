@@ -231,11 +231,116 @@ export class PageItemHandlers {
             const doc = app.activeDocument;
             if (${pageIndex} < 0 || ${pageIndex} >= doc.pages.length) return { success: false, error: 'Page index out of range' };
             const page = doc.pages.item(${pageIndex});
-            const items = [];
+            const { MeasurementUnits } = require('indesign');
+            const savedH = doc.viewPreferences.horizontalMeasurementUnits;
+            const savedV = doc.viewPreferences.verticalMeasurementUnits;
+            try {
+                doc.viewPreferences.horizontalMeasurementUnits = MeasurementUnits.points;
+                doc.viewPreferences.verticalMeasurementUnits = MeasurementUnits.points;
+                const items = [];
+                const safeGet = (fn, fallback = null) => { try { return fn(); } catch (e) { return fallback; } };
+            const uniquePush = (values, value) => {
+                if (value !== null && value !== undefined && !values.includes(value)) values.push(value);
+            };
+            const propertyName = (value) => {
+                if (typeof value === 'string') return value;
+                if (value && typeof value === 'object') return value.name ?? null;
+                return null;
+            };
+            const collectionLength = (value) => {
+                if (!value || !Number.isInteger(value.length) || value.length < 0) {
+                    throw new Error('Page item collection is unavailable');
+                }
+                return value.length;
+            };
+            const collectionItem = (value, index) => Array.isArray(value) ? value[index] : value.item(index);
+            const sameObject = (left, right) => left === right || (
+                left && right && left.id !== undefined && right.id !== undefined && left.id === right.id
+            );
             for (let i = 0; i < (page.allPageItems ? page.allPageItems.length : 0); i++) {
                 const item = page.allPageItems[i];
                 let type = 'Unknown';
                 try { type = item.constructor?.name || 'Unknown'; } catch(e) {}
+                const isText = type === 'TextFrame' || safeGet(() => item.texts) != null;
+                let overset = null;
+                let textInspection = { status: 'not_applicable' };
+                let textFormatting = { status: 'not_applicable' };
+                if (isText) {
+                    try {
+                        const value = item.overflows;
+                        if (typeof value !== 'boolean') throw new Error('TextFrame.overflows is unavailable');
+                        overset = value;
+                        textInspection = { status: 'known' };
+                    } catch (e) {
+                        textInspection = { status: 'unknown', reason: e.message };
+                    }
+                    try {
+                        const fontNames = [];
+                        const pointSizes = [];
+                        const justifications = [];
+                        const fillColors = [];
+                        const paragraphStyles = [];
+                        const characterStyles = [];
+                        const ranges = item.textStyleRanges;
+                        for (let r = 0; r < ranges.length; r++) {
+                            const range = ranges.item(r);
+                            uniquePush(fontNames, propertyName(range.appliedFont));
+                            uniquePush(pointSizes, range.pointSize);
+                            uniquePush(justifications, String(range.justification));
+                            uniquePush(fillColors, propertyName(range.fillColor));
+                            uniquePush(paragraphStyles, propertyName(range.appliedParagraphStyle));
+                            uniquePush(characterStyles, propertyName(range.appliedCharacterStyle));
+                        }
+                        textFormatting = {
+                            status: 'known', fontNames, pointSizes, justifications,
+                            fillColors, paragraphStyles, characterStyles
+                        };
+                    } catch (e) {
+                        textFormatting = { status: 'unknown', reason: e.message };
+                    }
+                }
+                let inheritedMasterContent = null;
+                let masterContentInspection = { status: 'unknown', reason: 'Master origin is unavailable' };
+                let masterName = null;
+                try {
+                    const master = page.appliedMaster;
+                    masterName = master ? master.name : null;
+                    const masterItems = page.masterPageItems;
+                    if (masterItems !== undefined && masterItems !== null) {
+                        const containsMasterItem = (candidate) => {
+                            const length = collectionLength(masterItems);
+                            for (let m = 0; m < length; m++) {
+                                if (sameObject(collectionItem(masterItems, m), candidate)) return true;
+                            }
+                            return false;
+                        };
+                        inheritedMasterContent = containsMasterItem(item);
+                        if (!inheritedMasterContent) {
+                            // Some UXP responses list an inherited Group rather than
+                            // each child. Only an unoverridden child of that listed
+                            // group inherits the master origin.
+                            let ancestor = item.parent;
+                            const seen = new Set();
+                            while (ancestor && ancestor.constructor?.name === 'Group' && !seen.has(ancestor)) {
+                                seen.add(ancestor);
+                                if (containsMasterItem(ancestor)) {
+                                    inheritedMasterContent = item.overridden === false;
+                                    break;
+                                }
+                                ancestor = ancestor.parent;
+                            }
+                        }
+                    } else {
+                        // Compatibility for older bridges that do not expose
+                        // Page.masterPageItems at all.
+                        const parent = item.parent;
+                        const sameMaster = !!master && sameObject(parent, master);
+                        inheritedMasterContent = sameMaster && item.overridden === false;
+                    }
+                    masterContentInspection = { status: 'known' };
+                } catch (e) {
+                    masterContentInspection = { status: 'unknown', reason: e.message };
+                }
                 items.push({
                     index: i,
                     type,
@@ -243,10 +348,27 @@ export class PageItemHandlers {
                     id: item.id,
                     visible: item.visible,
                     locked: item.locked,
-                    geometricBounds: item.geometricBounds
+                    geometricBounds: item.geometricBounds,
+                    fillColorName: safeGet(() => item.fillColor ? item.fillColor.name : 'None'),
+                    strokeColorName: safeGet(() => item.strokeColor ? item.strokeColor.name : 'None'),
+                    strokeWeight: safeGet(() => item.strokeWeight),
+                    inheritedMasterContent,
+                    masterName,
+                    masterContentInspection,
+                    overset,
+                    textInspection,
+                    textFormatting,
+                    ...(isText ? { contents: safeGet(() => item.contents) } : {})
                 });
             }
-            return { success: true, items, count: items.length, pageIndex: ${pageIndex} };
+                return { success: true, items, count: items.length, pageIndex: ${pageIndex}, geometricBoundsUnit: 'pt' };
+            } finally {
+                try {
+                    doc.viewPreferences.horizontalMeasurementUnits = savedH;
+                } finally {
+                    doc.viewPreferences.verticalMeasurementUnits = savedV;
+                }
+            }
         `;
 
         const result = await ScriptExecutor.executeViaUXP(code);

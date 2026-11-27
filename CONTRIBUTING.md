@@ -15,7 +15,7 @@ Thank you for your interest in contributing to the InDesign MCP Server! This doc
 ## 📋 Prerequisites
 
 - **Adobe InDesign** (macOS) - Required for testing
-- **Node.js 18+** - For development and testing
+- **Node.js 20+** - For development and testing
 - **macOS** - Required for AppleScript integration
 - **Git** - For version control
 

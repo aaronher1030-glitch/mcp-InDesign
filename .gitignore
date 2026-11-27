@@ -98,6 +98,9 @@ temp_script.jsx
 .cursor-tools.env
 .cursor-tools.config.json
 
+# Generated bundle and SEA intermediates
+build/
+
 # Development artifacts
 *.tmp
 *.temp

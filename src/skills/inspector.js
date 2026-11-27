@@ -83,9 +83,47 @@ export async function inspectLayout(options = {}, callTool) {
     throw inspectionError(cause.message, { phase: 'pageRange', cause });
   }
 
-  const styles = await read('get_document_styles', undefined, (result) => {
-    if (!isRecord(result) && !Array.isArray(result)) throw new TypeError('styles must be an object or array');
-  });
+  const styleTypes = [
+    ['PARAGRAPH', 'paragraph'],
+    ['CHARACTER', 'character'],
+    ['OBJECT', 'object'],
+  ];
+  const styles = {};
+  let legacyStyles;
+  for (const [styleType, key] of styleTypes) {
+    const result = await read('get_document_styles', { styleType }, (value) => {
+      if (!isRecord(value) && !Array.isArray(value)) {
+        throw new TypeError('styles must be an object or array');
+      }
+      if (isRecord(value) && (value.styleType !== undefined || Array.isArray(value.styles))) {
+        if ((value.styleType !== undefined && value.styleType !== styleType)
+            || !Array.isArray(value.styles) || value.count !== value.styles.length
+            || value.styles.some((name) => typeof name !== 'string' || !name.trim())) {
+          throw new TypeError(`styles must contain the requested ${styleType} style list and count`);
+        }
+      }
+    });
+    if (isRecord(result) && result.styleType !== undefined) {
+      styles[key] = result.styles;
+    } else if (legacyStyles === undefined) {
+      // Older bridges/fixtures returned the whole map (or the default paragraph
+      // list) regardless of arguments. Keep that input working while preferring
+      // actual per-type responses whenever the bridge supplies them.
+      legacyStyles = Array.isArray(result) || (isRecord(result) && Array.isArray(result.styles))
+        ? (Array.isArray(result) ? result : result.styles)
+        : result;
+    }
+  }
+  if (legacyStyles !== undefined) {
+    if (Array.isArray(legacyStyles)) {
+      styles.paragraph ??= legacyStyles;
+    } else {
+      for (const [, key] of styleTypes) {
+        styles[key] ??= legacyStyles[key];
+      }
+    }
+  }
+  for (const [, key] of styleTypes) styles[key] ??= [];
   const colors = await read('get_document_colors', undefined, (result) => {
     if (!isRecord(result) && !Array.isArray(result)) throw new TypeError('colors must be an object or array');
   });
@@ -104,9 +142,18 @@ export async function inspectLayout(options = {}, callTool) {
           || value.items.some((entry) => !isRecord(entry))) {
         throw new TypeError('list_page_items must return an items array of objects');
       }
+      if (value.pageIndex !== undefined && value.pageIndex !== index) {
+        throw new TypeError(`list_page_items returned page ${value.pageIndex} instead of ${index}`);
+      }
+      if (value.count !== undefined && (!Number.isInteger(value.count) || value.count !== value.items.length)) {
+        throw new TypeError('list_page_items count must match its returned items array');
+      }
     });
     const summary = await read('get_page_content_summary', args, (value) => {
       if (!isRecord(value)) throw new TypeError('page content summary must be an object');
+      if (value.pageIndex !== undefined && value.pageIndex !== index) {
+        throw new TypeError(`page content summary returned page ${value.pageIndex} instead of ${index}`);
+      }
     });
     pages.push({ index, items: result.items, summary });
   }
@@ -116,10 +163,17 @@ export async function inspectLayout(options = {}, callTool) {
     createdAt: new Date().toISOString(),
     document,
     pages,
+    coverage: {
+      pageCount,
+      inspectedPageIndexes: [...pageIndexes],
+      complete: pageIndexes.length === pageCount,
+    },
     styles,
     colors,
     layers,
     validation,
+    ...(Array.isArray(validation.fonts) ? { fonts: validation.fonts } : {}),
+    ...(Array.isArray(validation.links) ? { links: validation.links } : {}),
   };
   try {
     inspection.fingerprint = documentFingerprint(inspection);

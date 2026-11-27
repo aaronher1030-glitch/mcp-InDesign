@@ -3,8 +3,25 @@
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+    ListToolsRequestSchema,
+    CallToolRequestSchema,
+    ListPromptsRequestSchema,
+    GetPromptRequestSchema,
+    ListResourcesRequestSchema,
+    ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { allToolDefinitions } from '../types/index.js';
+import { SkillRuntime } from '../skills/runtime.js';
+import { getSkill } from '../skills/registry.js';
+import {
+    EDIT_LIFECYCLE_MARKDOWN,
+    QUALITY_RUBRIC_MARKDOWN,
+    PROMPT_TO_SKILL,
+    SKILL_PROMPT_NAMES,
+} from '../skills/protocol.js';
+import { previewLayout } from '../quality/pageRenderer.js';
+import { MCP_SERVER_NAME, APP_VERSION } from '../version.js';
 import {
     BookHandlers,
     DocumentHandlers,
@@ -22,18 +39,33 @@ import {
 import { formatResponse, formatErrorResponse } from '../utils/stringUtils.js';
 
 export class InDesignMCPServer {
-    constructor() {
+    constructor(options = {}) {
+        this.callToolOverride = typeof options.callTool === 'function' ? options.callTool : null;
         this.server = new Server(
             {
-                name: 'indesign-server-complete',
-                version: '1.0.0',
+                name: MCP_SERVER_NAME,
+                version: APP_VERSION,
             },
             {
                 capabilities: {
                     tools: {},
+                    prompts: {},
+                    resources: {},
+                    elicitation: {},
                 },
             }
         );
+
+        this.runtime = new SkillRuntime({
+            callTool: this.callToolOverride
+                ?? ((name, args) => this.handleLowLevelTool(name, args)),
+            artifactDir: options.artifactDir,
+        });
+        this.runtime.callTool = this.callToolOverride
+            ?? ((name, args) => this.handleLowLevelTool(name, args));
+        this.elicitInput = typeof options.elicitInput === 'function'
+            ? options.elicitInput
+            : (params) => this.server.elicitInput(params);
 
         this.setupToolHandlers();
     }
@@ -47,15 +79,344 @@ export class InDesignMCPServer {
             const { name, arguments: args } = request.params;
 
             try {
-                const result = await this.handleToolCall(name, args);
-                return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+                const result = await this.handleToolCall(name, args, {});
+                return {
+                    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+                    ...(result && result.success === false ? { isError: true } : {}),
+                };
             } catch (error) {
-                return { content: [{ type: 'text', text: `Error: ${error.message}` }] };
+                return {
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            success: false,
+                            code: error.code || 'TOOL_ERROR',
+                            error: error.message || String(error),
+                            result: error.result ?? undefined,
+                        }, null, 2),
+                    }],
+                    isError: true,
+                };
             }
         });
+
+        this.server.setRequestHandler(ListPromptsRequestSchema, async () => this.listPrompts());
+        this.server.setRequestHandler(GetPromptRequestSchema, async (request) => (
+            this.getPrompt(request.params.name, request.params.arguments || {})
+        ));
+        this.server.setRequestHandler(ListResourcesRequestSchema, async () => this.listResources());
+        this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => (
+            this.readResource(request.params.uri)
+        ));
     }
 
-    async handleToolCall(name, args) {
+    async listPrompts() {
+        return {
+            prompts: SKILL_PROMPT_NAMES.map((name) => ({
+                name,
+                description: `Run the ${PROMPT_TO_SKILL[name]} skill with the portable inspect-plan-apply-verify workflow.`,
+                arguments: [
+                    { name: 'request', description: 'What the user wants changed', required: true },
+                    { name: 'pageRange', description: 'all, 3, 1-5, or 1,3,5-7', required: false },
+                ],
+            })),
+        };
+    }
+
+    async getPrompt(name, args = {}) {
+        const skillId = PROMPT_TO_SKILL[name];
+        if (!skillId) throw new Error(`Unknown prompt: ${name}`);
+        const skill = await getSkill(skillId);
+        const request = String(args.request || '').trim() || skill.examples[0];
+        const pageRange = String(args.pageRange || 'all');
+        const text = [
+            skill.content,
+            '## Shared edit protocol',
+            EDIT_LIFECYCLE_MARKDOWN,
+            '## Quality rubric',
+            QUALITY_RUBRIC_MARKDOWN,
+            '## This request',
+            `Request: ${request}`,
+            `Page range: ${pageRange}`,
+            'Start by calling `inspect_layout` for that page range.',
+        ].join('\n\n');
+        return {
+            description: skill.summary,
+            messages: [{ role: 'user', content: { type: 'text', text } }],
+        };
+    }
+
+    async listResources() {
+        const resources = SKILL_PROMPT_NAMES.map((promptName) => {
+            const id = PROMPT_TO_SKILL[promptName];
+            return {
+                uri: `indesign://skills/${id}`,
+                name: `Skill: ${id}`,
+                description: `Portable instructions for the ${id} skill`,
+                mimeType: 'text/markdown',
+            };
+        });
+        resources.push(
+            {
+                uri: 'indesign://protocol/edit-lifecycle',
+                name: 'Edit lifecycle',
+                description: 'Plan, approval, verification and rollback contract',
+                mimeType: 'text/markdown',
+            },
+            {
+                uri: 'indesign://quality/rubric',
+                name: 'Quality rubric',
+                description: 'Structural and visual acceptance criteria',
+                mimeType: 'text/markdown',
+            },
+        );
+        return { resources };
+    }
+
+    async readResource(uri) {
+        if (uri === 'indesign://protocol/edit-lifecycle') {
+            return { contents: [{ uri, mimeType: 'text/markdown', text: EDIT_LIFECYCLE_MARKDOWN }] };
+        }
+        if (uri === 'indesign://quality/rubric') {
+            return { contents: [{ uri, mimeType: 'text/markdown', text: QUALITY_RUBRIC_MARKDOWN }] };
+        }
+        const match = /^indesign:\/\/skills\/([a-z0-9-]+)$/.exec(uri);
+        if (!match) throw new Error(`Unknown resource: ${uri}`);
+        const skill = await getSkill(match[1]);
+        return { contents: [{ uri, mimeType: 'text/markdown', text: skill.content }] };
+    }
+
+    async handleToolCall(name, args, context = {}) {
+        switch (name) {
+            case 'inspect_layout': {
+                const inspection = await this.runtime.createInspection(args || {});
+                return { success: true, operation: 'Inspect Layout', result: inspection };
+            }
+            case 'plan_edit': {
+                const plan = await this.runtime.createPlan(args || {});
+                return { success: true, operation: 'Plan Edit', result: plan };
+            }
+            case 'apply_edit_plan': {
+                return this.applyEditPlan(args, context);
+            }
+            case 'verify_layout': {
+                const { planId, visualReview } = args || {};
+                const result = await this.runtime.verify({
+                    planId,
+                    visualReview,
+                    settings: context.settings,
+                });
+                return { success: true, operation: 'Verify Layout', result };
+            }
+            case 'rollback_edit': {
+                const result = await this.runtime.rollbackPlan(args || {});
+                return { success: true, operation: 'Rollback Edit', result };
+            }
+            case 'preview_layout': {
+                const { pages = [0], open = true } = args || {};
+                const result = await previewLayout({
+                    pages,
+                    open,
+                    callTool: this.runtime.callTool,
+                    outputDir: undefined,
+                });
+                return { success: true, operation: 'Preview Layout', result };
+            }
+            case 'list_skills': {
+                const skills = await this.runtime.listSkills();
+                return { success: true, operation: 'List Skills', result: { skills } };
+            }
+            default:
+                return await this.handleLowLevelTool(name, args);
+        }
+    }
+
+    approvalFailure(status, code, error, details = {}) {
+        return {
+            success: false,
+            operation: 'Apply Edit Plan',
+            result: { ...details, status, code, error },
+        };
+    }
+
+    /**
+     * External MCP callers never provide approval. Only this trusted adapter
+     * can turn an explicit human elicitation response into a one-time token.
+     */
+    async applyEditPlan(args = {}, context = {}) {
+        const planId = args?.planId;
+        const expectedVersion = args?.expectedVersion;
+        if (args && typeof args === 'object'
+            && (Object.hasOwn(args, 'approved') || Object.hasOwn(args, 'approvalToken'))) {
+            return this.approvalFailure(
+                'approval_required',
+                'APPROVAL_REQUIRED',
+                'Caller-supplied approval fields are not accepted. A human must approve the exact plan version through the server approval UI.',
+                { planId, version: expectedVersion },
+            );
+        }
+
+        let view;
+        try {
+            view = this.runtime.getPlan(planId);
+        } catch (error) {
+            throw error;
+        }
+
+        if (view.plan.risk !== 'high') {
+            const applied = await this.runtime.applyPlan({ planId, expectedVersion, signal: context.signal });
+            return { success: true, operation: 'Apply Edit Plan', result: applied };
+        }
+
+        // Copilot's trusted UI resolves approval outside the MCP transport. The
+        // model path uses deferApproval and can never set trustedApproval.
+        if (context.trustedApproval === true) {
+            const applied = await this.runtime.applyPlan({
+                planId,
+                expectedVersion,
+                approvalToken: args?.approvalToken,
+                signal: context.signal,
+            });
+            return { success: true, operation: 'Apply Edit Plan', result: applied };
+        }
+
+        let prepared;
+        try {
+            prepared = await this.runtime.prepareApproval({ planId, expectedVersion });
+        } catch (error) {
+            if (error.code === 'APPROVAL_MISMATCH') {
+                return this.approvalFailure('approval_mismatch', error.code, error.message, {
+                    planId, expectedVersion, version: error.version,
+                });
+            }
+            if (error.code === 'APPROVAL_REQUIRED') {
+                return this.approvalFailure('approval_required', error.code, error.message, {
+                    planId, expectedVersion, version: view.plan.version,
+                    affectedPages: view.plan.affectedPages,
+                });
+            }
+            if (['BEFORE_RENDER_FAILED', 'STALE_PLAN'].includes(error.code)) {
+                return this.approvalFailure('approval_unavailable', error.code, error.message, {
+                    planId, expectedVersion, version: view.plan.version,
+                    affectedPages: view.plan.affectedPages,
+                    beforeArtifacts: view.beforeArtifacts?.paths ?? [],
+                    beforeArtifactsError: view.beforeArtifacts?.error ?? error.message,
+                });
+            }
+            throw error;
+        }
+
+        if (context.deferApproval === true) {
+            return {
+                success: true,
+                operation: 'Apply Edit Plan',
+                result: { ...prepared, status: 'approval_required' },
+            };
+        }
+
+        if (typeof this.elicitInput !== 'function') {
+            return this.approvalFailure(
+                'approval_unavailable',
+                'ELICITATION_UNAVAILABLE',
+                'The MCP client does not support human approval elicitation.',
+                prepared,
+            );
+        }
+
+        const artifactsByPage = prepared.beforeArtifactsPageIndexes
+            .map((pageIndex, index) => ({ pageIndex, path: prepared.beforeArtifacts[index] }))
+            .sort((left, right) => left.pageIndex - right.pageIndex);
+        const message = [
+            'Approve this high-risk InDesign edit?',
+            `Plan ID: ${prepared.planId}`,
+            `Exact plan version: ${prepared.version}`,
+            `Affected page indexes (zero-based): ${JSON.stringify(prepared.affectedPages)}`,
+            `Before-artifact paths by page: ${JSON.stringify(artifactsByPage)}`,
+            `Summary: ${prepared.summary}`,
+            `Expected changes: ${(prepared.expectedChanges ?? []).join('; ')}`,
+            'Nothing will be changed unless you explicitly approve this exact version.',
+        ].join('\n');
+        let response;
+        try {
+            response = await this.elicitInput({
+                mode: 'form',
+                message,
+                requestedSchema: {
+                    type: 'object',
+                    properties: {
+                        decision: {
+                            type: 'string',
+                            title: 'Decision',
+                            enum: ['approve', 'decline'],
+                            enumNames: ['Approve exact plan version', 'Decline'],
+                            default: 'decline',
+                        },
+                        confirmedVersion: {
+                            type: 'integer',
+                            title: 'Exact plan version',
+                            description: `Enter ${prepared.version} to approve the version displayed above.`,
+                            minimum: prepared.version,
+                            maximum: prepared.version,
+                            default: prepared.version,
+                        },
+                    },
+                    required: ['decision', 'confirmedVersion'],
+                },
+            });
+        } catch (error) {
+            return this.approvalFailure(
+                'approval_unavailable',
+                'ELICITATION_UNAVAILABLE',
+                `Human approval elicitation is unavailable: ${error.message || String(error)}`,
+                prepared,
+            );
+        }
+
+        if (response?.action !== 'accept'
+            || response?.content?.decision !== 'approve'
+            || response?.content?.confirmedVersion !== prepared.version) {
+            return this.approvalFailure(
+                'approval_declined',
+                'APPROVAL_DECLINED',
+                'The human did not explicitly approve the exact displayed plan version. Nothing was changed.',
+                prepared,
+            );
+        }
+
+        let approvalToken;
+        try {
+            approvalToken = this.runtime.issueApprovalCapability({
+                planId: prepared.planId,
+                expectedVersion: prepared.version,
+            }).approvalToken;
+            const applied = await this.runtime.applyPlan({
+                planId: prepared.planId,
+                expectedVersion: prepared.version,
+                approvalToken,
+                signal: context.signal,
+            });
+            return { success: true, operation: 'Apply Edit Plan', result: applied };
+        } catch (error) {
+            if (error.code === 'APPROVAL_MISMATCH') {
+                return this.approvalFailure('approval_mismatch', error.code, error.message, {
+                    planId: prepared.planId, expectedVersion: prepared.version, version: error.version,
+                });
+            }
+            if (error.code === 'BEFORE_RENDER_FAILED') {
+                return this.approvalFailure('approval_unavailable', error.code, error.message, {
+                    planId: prepared.planId,
+                    expectedVersion: prepared.version,
+                    version: prepared.version,
+                    affectedPages: prepared.affectedPages,
+                    beforeArtifacts: error.artifactPaths ?? [],
+                    beforeArtifactsError: error.renderError ?? error.message,
+                });
+            }
+            throw error;
+        }
+    }
+
+    async handleLowLevelTool(name, args) {
         // Document Management
         switch (name) {
             case 'get_document_info': return await DocumentHandlers.getDocumentInfo();
@@ -233,6 +594,7 @@ export class InDesignMCPServer {
     async run() {
         const transport = new StdioServerTransport();
         await this.server.connect(transport);
+        console.error(`[MCP] ${MCP_SERVER_NAME} v${APP_VERSION} ready (stdio)`);
         // Don't log to stdout as it interferes with MCP protocol
         // console.log('InDesign MCP Server started');
     }

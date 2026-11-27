@@ -83,6 +83,31 @@
       padding: 6px;
     }
     #activity { padding: 0 10px 6px; font-size: 11px; opacity: 0.75; min-height: 14px; }
+    #approval {
+      display: none;
+      margin: 8px 10px 0;
+      padding: 8px 10px;
+      border: 1px solid #b98a2e;
+      border-radius: 6px;
+      background: rgba(185, 138, 46, 0.14);
+      gap: 6px;
+    }
+    #approval.open { display: flex; flex-direction: column; }
+    #approval h2 { margin: 0; font-size: 12px; font-weight: 650; color: #f0c674; }
+    #approval p { margin: 0; font-size: 11px; }
+    #approvalPlan {
+      margin: 0;
+      padding: 6px;
+      max-height: 180px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: rgba(0, 0, 0, 0.18);
+      font: 10px/1.4 monospace;
+    }
+    #approval .muted { opacity: 0.75; }
+    #approval .row { display: flex; gap: 6px; margin-top: 2px; }
+    #approval #approveBtn { background: #4a7c59; border-color: #5d9970; }
   </style>
 </head>
 <body>
@@ -106,10 +131,23 @@
       <input id="model" type="text" placeholder="gpt-4.1, claude-sonnet-4-5, or any id" />
     </label>
     <label>API key
-      <input id="apiKey" type="password" placeholder="Stored only in this panel" autocomplete="off" />
+      <input id="apiKey" type="password" placeholder="Memory only; never saved" autocomplete="off" />
     </label>
-    <p>OpenAI-compatible also covers OpenRouter, Groq, Together, Ollama, LM Studio, and Gemini’s OpenAI endpoint. The key is sent only to that URL, through this computer.</p>
+    <label>Bridge token (optional)
+      <input id="bridgeToken" type="password" placeholder="Only if BRIDGE_TOKEN is set" autocomplete="off" />
+    </label>
+    <p>OpenAI-compatible also covers OpenRouter, Groq, Together, Ollama, LM Studio, and Gemini’s OpenAI endpoint. The key is sent only to that URL, through this computer, and is cleared after the request. Saving settings never stores it.</p>
     <button id="saveSettings" type="button">Save</button>
+  </section>
+  <section id="approval">
+    <h2>Approval required</h2>
+    <p id="approvalSummary"></p>
+    <p id="approvalPages" class="muted"></p>
+    <pre id="approvalPlan"></pre>
+    <div class="row">
+      <button id="approveBtn" type="button">Approve and apply</button>
+      <button id="cancelBtn" type="button">Cancel</button>
+    </div>
   </section>
   <div id="log">
     <div class="empty" id="empty">Ask to move, resize, or restyle something on the open page. The frames update in the layout as the model works.</div>

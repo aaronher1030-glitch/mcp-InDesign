@@ -6,13 +6,13 @@
 
 **Architecture:** Keep the existing stdio MCP server, HTTP/WebSocket bridge, and UXP plugin. Add a filesystem skill catalog, a shared plan/approval/execution runtime, deterministic structural checks, rendered-page visual review, and five high-level MCP tools. Copilot and external clients author plans with their own model; the server validates and enforces them.
 
-**Tech Stack:** Node.js 18+, JavaScript ES modules, `@modelcontextprotocol/sdk` ^1.27.1, Express 4, `ws` 8, `node:test`, Adobe InDesign 2024 UXP.
+**Tech Stack:** Node.js 20+, JavaScript ES modules, `@modelcontextprotocol/sdk` ^1.32.2, Express 4, `ws` 8, `node:test`, Adobe InDesign 2024 UXP.
 
 **Spec:** `docs/superpowers/specs/2026-11-25-indesign-portable-skill-runtime-design.md`
 
 ## Global Constraints
 
-- Target Windows with Adobe InDesign 2024+ and Node.js 18+.
+- Target Windows with Adobe InDesign 2024+ and Node.js 20+.
 - Preserve stdio MCP transport and the existing 135 low-level tools.
 - Keep the bridge bound to `127.0.0.1:3000` and `127.0.0.1:3001`.
 - Standard skill plans must not call `execute_indesign_code`.
@@ -838,7 +838,7 @@ Create `src/types/toolDefinitionsSkills.js` with these exact required fields:
 
 - `inspect_layout`: optional `pageRange`.
 - `plan_edit`: required `inspectionId`, `skillId`, `plan`.
-- `apply_edit_plan`: required `planId`, `approved`, `expectedVersion`.
+- `apply_edit_plan`: required `planId`, `expectedVersion`; high-risk authorization is issued server-side only after trusted MCP elicitation accepts the exact version.
 - `verify_layout`: required `planId`; optional `visualReview`.
 - `rollback_edit`: required `planId`; optional `reason`.
 
@@ -1221,7 +1221,7 @@ After a tool result with `result.status === "approval_required"`, emit the appro
 
 - [ ] **Step 4: Add approval handling to the bridge**
 
-Export `resolveApproval({ planId, approved, settings, emit })` from `src/chat/agent.js`. It uses the same server singleton, calls `apply_edit_plan` with `approved` and the current plan version, emits tool/progress/done events, and never accepts a plan ID from a different active server session.
+Export trusted approval resolution from `src/chat/agent.js`. It uses the same server singleton, requires the current plan version and exact preflight render details, issues a private one-time capability only after panel acceptance, emits tool/progress/done events, and never accepts a plan ID from a different active server session.
 
 Update `/chat` so bearer-token middleware protects it when configured. If `req.body.approval` exists, require `chatActive`, call `resolveApproval`, and finish the SSE response using the existing event helper.
 
@@ -1234,7 +1234,7 @@ In `plugin/index.html`, add a hidden `approval` container with:
 - Approve button
 - Cancel button
 
-In `plugin/index.js`, handle `event.type === "approval"` by storing the pending plan and showing the container. Approve posts `{ approval: { planId, approved: true }, settings }` to `/chat`. Cancel posts `approved: false`. Clear the pending card on `done` or `error`.
+In `plugin/index.js`, handle `event.type === "approval"` by storing the exact pending plan/version, targets, steps, affected pages, and before-render details, then showing the container. Approve posts trusted panel context to `/chat`; the server issues the capability only after validating those details. Cancel clears the pending request. Clear the pending card on `done` or `error`.
 
 - [ ] **Step 6: Run chat tests**
 
@@ -1302,7 +1302,7 @@ Exclude live/manual scripts that are not compatible with `node --test` or move t
 
 Update `README.md` with:
 
-- Node 18+ and InDesign 2024+ on Windows or macOS.
+- Node 20+ and InDesign 2024+ on Windows or macOS.
 - Bridge and plugin setup.
 - MCP configuration using `src/index.js`.
 - The six skill prompts and five high-level tools.

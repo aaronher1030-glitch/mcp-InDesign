@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { allToolDefinitions } from '../types/index.js';
+import { buildInverse } from './editJournal.js';
 
 export const EDIT_PLAN_STATUSES = [
   'draft',
@@ -42,6 +43,9 @@ const TOOL_SCHEMAS = new Map(
 );
 const IDENTITY_KEYS = ['pageIndex', 'itemIndex', 'frameIndex', 'objectIndex'];
 const TARGET_SELECTORS = ['targetIndex', 'targetId', 'targetFingerprint'];
+const TEXT_FRAME_TOOLS = new Set(['edit_text_frame', 'apply_paragraph_style', 'apply_character_style']);
+const ITEM_COLLECTION_TYPES = { Rectangle: 'rectangles', Oval: 'ovals', Polygon: 'polygons' };
+const ITEM_TOOL_TYPES = { Rectangle: 'rectangle', Oval: 'ellipse', Polygon: 'polygon' };
 
 function isRecord(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -125,13 +129,65 @@ function isIndex(value) {
   return Number.isInteger(value) && value >= 0;
 }
 
+/** Bind caller-selected identity to the item captured by inspection. */
+export function bindTargetToInspection(target, inspection) {
+  if (!isRecord(target) || !isRecord(inspection) || !Array.isArray(inspection.pages)) return null;
+  const page = inspection.pages.find((entry) => entry?.index === target.pageIndex);
+  if (!page || !Array.isArray(page.items)) return null;
+  const index = target.itemIndex ?? target.index;
+  let item;
+  if (target.itemId !== undefined || target.objectId !== undefined) {
+    const id = target.itemId ?? target.objectId;
+    item = page.items.find((entry) => String(entry?.id) === String(id));
+  } else {
+    item = page.items.find((entry) => (entry?.index ?? entry?.itemIndex) === index);
+  }
+  if (!item) return null;
+  const bound = {
+    ...cloneJson(target, 'target'),
+    pageIndex: page.index,
+    itemIndex: item.index ?? item.itemIndex ?? index,
+    inspected: true,
+    before: { ...cloneJson(target.before ?? {}, 'target.before'), ...cloneJson(item, 'inspected item') },
+  };
+  if (item.name !== undefined) bound.name = item.name;
+  if (item.id !== undefined) bound.itemId = item.id;
+
+  const allPageItemsIndex = item.index ?? item.itemIndex ?? index;
+  const typedItems = page.items.filter((entry) => ITEM_COLLECTION_TYPES[entry?.type] || entry?.type === 'TextFrame');
+  const indexes = { allPageItems: allPageItemsIndex };
+  if (typedItems.length === 0) {
+    // Legacy inspections did not include item.type. Preserve their homogeneous
+    // fixture behavior, but never guess when a mixed typed page is available.
+    indexes.textFrames = allPageItemsIndex;
+    for (const collection of Object.values(ITEM_COLLECTION_TYPES)) indexes[collection] = allPageItemsIndex;
+  } else {
+    for (const collection of ['textFrames', ...Object.values(ITEM_COLLECTION_TYPES)]) {
+      indexes[collection] = page.items
+        .filter((entry) => collection === 'textFrames' ? entry?.type === 'TextFrame' : ITEM_COLLECTION_TYPES[entry?.type] === collection)
+        .findIndex((entry) => (entry.index ?? entry.itemIndex) === allPageItemsIndex);
+      if (indexes[collection] < 0) delete indexes[collection];
+    }
+  }
+  bound.toolIndexes = indexes;
+  if (ITEM_TOOL_TYPES[item.type]) bound.itemType = ITEM_TOOL_TYPES[item.type];
+  return bound;
+}
+
+function canReverse(toolName, args, target) {
+  return LOW_RISK_TOOLS.has(toolName) && buildInverse({ toolName, arguments: args }, target) !== null;
+}
+
 function validStepRisk(step, target) {
   if (!isRecord(step) || !isRecord(target) || !LOW_RISK_TOOLS.has(step.toolName)
       || !isRecord(step.arguments) || step.reversible !== true
       || step.targetFingerprint !== target.fingerprint) return false;
   const schema = TOOL_SCHEMAS.get(step.toolName);
   if (!schema || validateArguments(step.arguments, step.toolName, 'step.arguments', []).length > 0) return false;
-  return identityConflicts(step.arguments, target, schema).length === 0;
+  if (identityConflicts(step.arguments, target, schema, step.toolName).length > 0) return false;
+  // Low risk means the edit can actually be undone from the target's recorded
+  // before-state. Without a buildable inverse the plan needs approval.
+  return canReverse(step.toolName, step.arguments, target);
 }
 
 export function classifyPlanRisk(plan) {
@@ -172,22 +228,35 @@ function normalizeId(value, fallback) {
   return typeof value === 'string' && value.trim() ? value : fallback();
 }
 
-function targetIdentity(target) {
-  return {
-    pageIndex: target.pageIndex,
-    itemIndex: target.itemIndex ?? target.index,
-    frameIndex: target.frameIndex ?? target.itemIndex ?? target.index,
-    objectIndex: target.objectIndex ?? target.itemIndex ?? target.index,
-  };
+function targetIdentity(target, toolName) {
+  const allPageItemsIndex = target.toolIndexes?.allPageItems ?? target.itemIndex ?? target.index;
+  const identity = { pageIndex: target.pageIndex, itemIndex: allPageItemsIndex };
+  if (TEXT_FRAME_TOOLS.has(toolName)) {
+    identity.frameIndex = target.toolIndexes?.textFrames ?? target.frameIndex;
+  } else if (toolName === 'apply_color') {
+    identity.objectIndex = target.toolIndexes?.allPageItems ?? target.objectIndex;
+  } else if (toolName === 'apply_object_style') {
+    const itemType = target.itemType ?? target.before?.itemType ?? target.before?.type;
+    const collection = ITEM_COLLECTION_TYPES[
+      Object.keys(ITEM_COLLECTION_TYPES).find((type) => ITEM_TOOL_TYPES[type] === String(itemType).toLowerCase())
+    ];
+    identity.itemIndex = target.toolIndexes?.[collection] ?? target.itemIndex ?? target.index;
+  }
+  return identity;
 }
 
-function identityConflicts(args, target, schema) {
+function identityConflicts(args, target, schema, toolName) {
   if (!isRecord(args) || !isRecord(target)) return [];
   const properties = schema?.properties ?? {};
-  const identity = targetIdentity(target);
-  return IDENTITY_KEYS.filter((key) => Object.hasOwn(properties, key)
+  const identity = targetIdentity(target, toolName);
+  const conflicts = IDENTITY_KEYS.filter((key) => Object.hasOwn(properties, key)
     && args[key] !== undefined
     && (!isIndex(args[key]) || !isIndex(identity[key]) || args[key] !== identity[key]));
+  if (toolName === 'apply_object_style' && args.itemType !== undefined && target.itemType !== undefined
+      && String(args.itemType).toLowerCase() !== String(target.itemType).toLowerCase()) {
+    conflicts.push('itemType');
+  }
+  return conflicts;
 }
 
 function findTarget(step, targets) {
@@ -224,22 +293,36 @@ function findTarget(step, targets) {
     if (resolved.some((target) => target !== selected)) {
       throw new TypeError(`step target selectors ${TARGET_SELECTORS.join('/')} resolve to different targets`);
     }
-    const conflicts = identityConflicts(args, selected, schema);
+    const conflicts = identityConflicts(args, selected, schema, step.toolName);
     if (conflicts.length > 0) {
       const selectors = TARGET_SELECTORS.filter((key) => step[key] !== undefined);
       throw new TypeError(`step ${selectors.join('/')} conflicts with step.arguments.${conflicts.join('/')}`);
     }
     if (suppliedIdentity.length > 0) {
-      const matches = targets.filter((target) => identityConflicts(args, target, schema).length === 0);
+      const matches = targets.filter((target) => identityConflicts(args, target, schema, step.toolName).length === 0);
       if (matches.length !== 1 || matches[0] !== selected) return undefined;
     }
     return selected;
   }
   if (suppliedIdentity.length > 0) {
-    const matches = targets.filter((target) => identityConflicts(args, target, schema).length === 0);
+    const matches = targets.filter((target) => identityConflicts(args, target, schema, step.toolName).length === 0);
     return matches.length === 1 ? matches[0] : undefined;
   }
   return targets.length === 1 ? targets[0] : undefined;
+}
+
+/** Resolve handler indices from the freshly inspected target's own collection. */
+export function rebindTargetArguments(toolName, args, target) {
+  const result = args === undefined ? undefined : cloneJson(args, 'step.arguments');
+  if (!isRecord(result) || !target) return result;
+  const schema = TOOL_SCHEMAS.get(toolName);
+  const properties = schema?.properties ?? {};
+  const identity = targetIdentity(target, toolName);
+  for (const key of IDENTITY_KEYS) {
+    if (Object.hasOwn(properties, key) && isIndex(identity[key])) result[key] = identity[key];
+  }
+  if (toolName === 'apply_object_style' && target.itemType !== undefined) result.itemType = target.itemType;
+  return result;
 }
 
 function inferTargetArguments(toolName, args, target) {
@@ -247,11 +330,14 @@ function inferTargetArguments(toolName, args, target) {
   if (!isRecord(result) || !target) return result;
   const schema = TOOL_SCHEMAS.get(toolName);
   const properties = schema?.properties ?? {};
-  const identity = targetIdentity(target);
+  const identity = targetIdentity(target, toolName);
   for (const key of IDENTITY_KEYS) {
     if (Object.hasOwn(properties, key) && result[key] === undefined && isIndex(identity[key])) {
       result[key] = identity[key];
     }
+  }
+  if (toolName === 'apply_object_style' && result.itemType === undefined && target.itemType !== undefined) {
+    result.itemType = target.itemType;
   }
   return result;
 }
@@ -298,10 +384,12 @@ export function normalizePlanInput(input) {
   const fingerprint = inspection.fingerprint ?? documentFingerprint(inspection);
   const targets = plan.targets.map((target, index) => {
     if (!isRecord(target)) throw new TypeError(`plan.targets[${index}] must be an object`);
+    const bound = bindTargetToInspection(target, inspection) ?? cloneJson(target, `plan.targets[${index}]`);
     return {
-      ...cloneJson(target, `plan.targets[${index}]`),
+      ...bound,
       id: normalizeId(target.id, randomUUID),
-      fingerprint: targetFingerprint(target),
+      inspected: bound.inspected === true,
+      fingerprint: targetFingerprint(bound),
     };
   });
 
@@ -312,11 +400,12 @@ export function normalizePlanInput(input) {
     }
     const toolName = typeof step.toolName === 'string' ? step.toolName.trim() : step.toolName;
     const target = findTarget({ ...step, toolName }, targets);
-    const reversible = LOW_RISK_TOOLS.has(toolName) && step.reversible !== false;
+    const args = inferTargetArguments(toolName, step.arguments, target);
+    const reversible = step.reversible !== false && canReverse(toolName, args, target);
     const normalizedStep = {
       id: normalizeId(step.id, randomUUID),
       toolName,
-      arguments: inferTargetArguments(toolName, step.arguments, target),
+      arguments: args,
       targetFingerprint: target?.fingerprint,
       expectedResult: cloneJson(step.expectedResult ?? {}, `plan.steps[${index}].expectedResult`),
       reversible,
@@ -333,7 +422,7 @@ export function normalizePlanInput(input) {
     skillId: skillId.trim(),
     documentFingerprint: fingerprint,
     baseRevision: inspection.baseRevision ?? inspection.document.revision ?? inspection.revision ?? fingerprint,
-    units: cloneJson(inspection.units ?? 'pt', 'inspection.units'),
+    units: cloneJson(inspection.units ?? inspection.document.units ?? 'pt', 'inspection.units'),
     risk: 'high',
     targets,
     steps,
@@ -454,6 +543,7 @@ function validateTarget(target, index, errors) {
     return;
   }
   if (typeof target.id !== 'string' || !target.id.trim()) errors.push(`${path}.id must be a non-empty string`);
+  if (target.inspected !== true) errors.push(`${path} must be bound to an inspected item`);
   if (!isIndex(target.pageIndex)) errors.push(`${path}.pageIndex must be a non-negative integer`);
   for (const key of IDENTITY_KEYS.slice(1)) {
     if (target[key] !== undefined && !isIndex(target[key])) {

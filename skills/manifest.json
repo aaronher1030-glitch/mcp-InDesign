@@ -21,13 +21,22 @@
         "plan_edit",
         "apply_edit_plan",
         "verify_layout",
-        "rollback_edit"
+        "rollback_edit",
+        "move_page_item",
+        "resize_page_item",
+        "set_page_item_properties",
+        "edit_text_frame",
+        "apply_paragraph_style",
+        "apply_character_style",
+        "apply_object_style",
+        "apply_color"
       ],
       "forbiddenTools": [
         "execute_indesign_code",
         "close_document",
         "print_book",
-        "package_document"
+        "package_document",
+        "save_document"
       ],
       "defaultRisk": "low",
       "qualityCriteria": [
@@ -69,7 +78,8 @@
         "execute_indesign_code",
         "close_document",
         "print_book",
-        "package_document"
+        "package_document",
+        "save_document"
       ],
       "defaultRisk": "low",
       "qualityCriteria": [
@@ -109,7 +119,8 @@
         "execute_indesign_code",
         "close_document",
         "print_book",
-        "package_document"
+        "package_document",
+        "save_document"
       ],
       "defaultRisk": "low",
       "qualityCriteria": [
@@ -148,7 +159,8 @@
         "execute_indesign_code",
         "close_document",
         "print_book",
-        "package_document"
+        "package_document",
+        "save_document"
       ],
       "defaultRisk": "low",
       "qualityCriteria": [
@@ -191,7 +203,8 @@
         "execute_indesign_code",
         "close_document",
         "print_book",
-        "package_document"
+        "package_document",
+        "save_document"
       ],
       "defaultRisk": "low",
       "qualityCriteria": [
@@ -230,7 +243,8 @@
         "execute_indesign_code",
         "close_document",
         "print_book",
-        "package_document"
+        "package_document",
+        "save_document"
       ],
       "defaultRisk": "high",
       "qualityCriteria": [
