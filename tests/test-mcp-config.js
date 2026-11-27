@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { configureMcpClient, configureClients, defaultClientTargets } from '../src/install/mcpConfig.js';
 
 function tempDirectory(t) {
@@ -31,13 +31,65 @@ test('configure creates only the requested server entry', (t) => {
   assert.equal(readFileSync(result.backupPath, 'utf8'), original);
 });
 
-test('configure is idempotent', (t) => {
+test('configure is idempotent without filesystem writes', (t) => {
   const file = tempFile(t);
   const options = { filePath: file, command: 'C:\\Apps\\InDesignAaronV1.1.exe' };
   configureMcpClient(options);
+  const directory = dirname(file);
+  const beforeContent = readFileSync(file);
+  const beforeMetadata = statSync(file);
+  const beforeEntries = readdirSync(directory).sort();
+
   const second = configureMcpClient(options);
+
   assert.equal(second.status, 'unchanged');
   assert.equal(second.backupPath, null);
+  assert.deepEqual(readFileSync(file), beforeContent);
+  const afterMetadata = statSync(file);
+  assert.equal(afterMetadata.mtimeMs, beforeMetadata.mtimeMs);
+  assert.equal(afterMetadata.ctimeMs, beforeMetadata.ctimeMs);
+  assert.equal(afterMetadata.ino, beforeMetadata.ino);
+  assert.deepEqual(readdirSync(directory).sort(), beforeEntries);
+  assert.equal(beforeEntries.some((name) => name.endsWith('.tmp')), false);
+});
+
+test('timestamp collisions preserve every backup with exact original content', (t) => {
+  const original = '{\r\n  "theme": "dark"\r\n}\r\n';
+  const file = tempFile(t, original);
+  t.mock.method(Date.prototype, 'toISOString', () => '2026-11-27T12:34:56.789Z');
+  const options = { filePath: file, command: 'C:\\Apps\\server.exe' };
+
+  const first = configureMcpClient(options);
+  const firstConfiguredContent = readFileSync(file);
+  const second = configureMcpClient({ ...options, remove: true });
+
+  assert.equal(first.status, 'configured');
+  assert.equal(second.status, 'removed');
+  assert.deepEqual(readFileSync(first.backupPath), Buffer.from(original));
+  assert.deepEqual(readFileSync(second.backupPath), firstConfiguredContent);
+  assert.notEqual(first.backupPath, second.backupPath);
+  assert.match(first.backupPath, /\.indesign-backup-2026-11-27T12-34-56-789Z(?:-\d+)?$/);
+  assert.match(second.backupPath, /\.indesign-backup-2026-11-27T12-34-56-789Z(?:-\d+)?$/);
+  assert.equal(readdirSync(dirname(file)).filter((name) => name.includes('.indesign-backup-')).length, 2);
+});
+
+test('failed replacement removes its temporary file and leaves the target unchanged', (t) => {
+  const original = '{"theme":"dark"}\r\n';
+  const file = tempFile(t, original);
+  const failure = new Error('simulated rename failure');
+  const options = { filePath: file, command: 'C:\\Apps\\server.exe' };
+
+  assert.throws(
+    () => configureMcpClient(options, { renameSync: () => { throw failure; } }),
+    (error) => error === failure,
+  );
+
+  assert.equal(readFileSync(file, 'utf8'), original);
+  const entries = readdirSync(dirname(file));
+  const backups = entries.filter((name) => name.includes('.indesign-backup-'));
+  assert.equal(backups.length, 1);
+  assert.equal(readFileSync(join(dirname(file), backups[0]), 'utf8'), original);
+  assert.equal(entries.filter((name) => name.endsWith('.tmp')).length, 0);
 });
 
 test('malformed JSON is untouched', (t) => {

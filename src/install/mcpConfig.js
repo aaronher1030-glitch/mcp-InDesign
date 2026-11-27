@@ -1,12 +1,23 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
-function atomicWrite(filePath, text) {
+function atomicWrite(filePath, text, fileSystem = {}) {
   mkdirSync(dirname(filePath), { recursive: true });
   const temporary = `${filePath}.${process.pid}.tmp`;
-  writeFileSync(temporary, text, 'utf8');
-  renameSync(temporary, filePath);
+  const rename = fileSystem.renameSync ?? renameSync;
+  const remove = fileSystem.rmSync ?? rmSync;
+  try {
+    writeFileSync(temporary, text, 'utf8');
+    rename(temporary, filePath);
+  } catch (error) {
+    try {
+      remove(temporary, { force: true });
+    } catch {
+      // Preserve the original write or rename failure.
+    }
+    throw error;
+  }
 }
 
 function readConfig(filePath) {
@@ -20,12 +31,19 @@ function readConfig(filePath) {
 
 function backup(filePath, original) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const backupPath = `${filePath}.indesign-backup-${stamp}`;
-  writeFileSync(backupPath, original, 'utf8');
-  return backupPath;
+  const basePath = `${filePath}.indesign-backup-${stamp}`;
+  for (let suffix = 0; ; suffix += 1) {
+    const backupPath = suffix === 0 ? basePath : `${basePath}-${suffix}`;
+    try {
+      writeFileSync(backupPath, original, { encoding: 'utf8', flag: 'wx' });
+      return backupPath;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+  }
 }
 
-export function configureMcpClient({ filePath, command, serverName = 'indesign', remove = false }) {
+export function configureMcpClient({ filePath, command, serverName = 'indesign', remove = false }, fileSystem = {}) {
   const original = existsSync(filePath) ? readFileSync(filePath, 'utf8') : null;
   const config = readConfig(filePath);
   const servers = config.mcpServers;
@@ -46,7 +64,7 @@ export function configureMcpClient({ filePath, command, serverName = 'indesign',
   const backupPath = original === null ? null : backup(filePath, original);
   if (remove) delete config.mcpServers[serverName];
   else config.mcpServers[serverName] = expected;
-  atomicWrite(filePath, `${JSON.stringify(config, null, 2)}\n`);
+  atomicWrite(filePath, `${JSON.stringify(config, null, 2)}\n`, fileSystem);
   return { status: remove ? 'removed' : 'configured', backupPath };
 }
 
