@@ -20,6 +20,8 @@ import {
 } from './core/selftest.js';
 import { embeddedPluginFiles } from './assets/embeddedPlugin.js';
 import { APP_NAME, APP_VERSION, BRIDGE_HTTP_PORT, BRIDGE_WS_PORT } from './version.js';
+import { configureClients, defaultClientTargets } from './install/mcpConfig.js';
+import { findUpia, installCcx, removeCcx } from './install/uxpInstaller.js';
 
 const args = process.argv.slice(2);
 const hasFlag = (...names) => names.some((name) => args.includes(name));
@@ -142,6 +144,36 @@ function numericFlag(name, fallback) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+function numericOrStringFlag(name) {
+  const index = args.findIndex((arg) => arg === name || arg.startsWith(`${name}=`));
+  if (index === -1) return null;
+  const value = args[index].includes('=') ? args[index].split('=').slice(1).join('=') : args[index + 1];
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function configureClientsCli(remove) {
+  const report = configureClients({
+    command: executablePath(),
+    remove,
+    serverName: numericOrStringFlag('--server-name') ?? 'indesign',
+    targets: defaultClientTargets({ all: hasFlag('--all-clients') }),
+  });
+  for (const result of report.results) {
+    console.log(`${result.id}: ${result.status}${result.error ? ` (${result.error})` : ''} - ${result.filePath}`);
+  }
+  return report.overall === 'ok' ? 0 : 1;
+}
+
+function uxpInstallerCli(remove) {
+  const flag = remove ? '--remove-uxp' : '--install-uxp';
+  const ccxPath = numericOrStringFlag(flag);
+  const operation = remove ? removeCcx : installCcx;
+  const result = operation({ ccxPath, upiaPath: findUpia() });
+  console.log(`${result.status}: ${ccxPath}${result.error ? ` (${result.error})` : ''}`);
+  if (result.status === (remove ? 'removed' : 'installed')) return 0;
+  return remove ? 4 : 3;
+}
+
 async function runSelftestCli() {
   const timeoutMs = numericFlag('--timeout', DEFAULT_SELFTEST_TIMEOUT_MS / 1000) * 1000;
   console.log(`${APP_NAME} ${APP_VERSION} - live self test`);
@@ -177,6 +209,10 @@ function printHelp() {
   console.log('  InDesignAaronV1.1 --install-plugin Write the InDesign UXP plugin next to the exe');
   console.log('  InDesignAaronV1.1 --print-config   Print the MCP client configuration JSON');
   console.log('  InDesignAaronV1.1 --doctor         Check InDesign, bridge and plugin status');
+  console.log('  InDesignAaronV1.1 --configure-clients [--all-clients] [--server-name NAME]   Configure MCP clients');
+  console.log('  InDesignAaronV1.1 --remove-clients [--server-name NAME]   Remove this server from MCP clients');
+  console.log('  InDesignAaronV1.1 --install-uxp <ccx-path>   Install a UXP extension through UPIA');
+  console.log('  InDesignAaronV1.1 --remove-uxp <ccx-path>    Remove a UXP extension through UPIA');
   console.log('  InDesignAaronV1.1 --selftest       Wait for the plugin, then inspect and preview the live document');
   console.log('  InDesignAaronV1.1 --selftest --timeout 120   Same, waiting up to 120 seconds');
   console.log('  InDesignAaronV1.1 --version        Print the version');
@@ -247,6 +283,22 @@ async function main() {
   }
   if (hasFlag('--doctor')) {
     await printDoctor();
+    return;
+  }
+  if (hasFlag('--configure-clients')) {
+    process.exitCode = configureClientsCli(false);
+    return;
+  }
+  if (hasFlag('--remove-clients')) {
+    process.exitCode = configureClientsCli(true);
+    return;
+  }
+  if (numericOrStringFlag('--install-uxp')) {
+    process.exitCode = uxpInstallerCli(false);
+    return;
+  }
+  if (numericOrStringFlag('--remove-uxp')) {
+    process.exitCode = uxpInstallerCli(true);
     return;
   }
   if (hasFlag('--selftest')) {
