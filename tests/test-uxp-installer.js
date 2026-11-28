@@ -25,6 +25,17 @@ test('findUpia checks the x86 Creative Cloud path when needed', () => {
   assert.equal(actual, X86_UPIA);
 });
 
+test('findUpia ignores non-absolute environment roots', () => {
+  const calls = [];
+  const actual = findUpia({
+    platform: 'win32',
+    env: { ProgramFiles: 'Program Files', 'ProgramFiles(x86)': 'C:\\Program Files (x86)' },
+    exists: (path) => { calls.push(path); return path === X86_UPIA; },
+  });
+  assert.equal(actual, X86_UPIA);
+  assert.deepEqual(calls, [X86_UPIA]);
+});
+
 test('findUpia returns null when no documented path exists', () => {
   assert.equal(findUpia({
     platform: 'win32',

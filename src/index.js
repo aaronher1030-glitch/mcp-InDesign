@@ -21,7 +21,7 @@ import {
 import { embeddedPluginFiles } from './assets/embeddedPlugin.js';
 import { APP_NAME, APP_VERSION, BRIDGE_HTTP_PORT, BRIDGE_WS_PORT } from './version.js';
 import { configureClients, defaultClientTargets } from './install/mcpConfig.js';
-import { findUpia, installCcx, removeCcx } from './install/uxpInstaller.js';
+import { findUpia, installCcx, removeCcx, uxpExitCode } from './install/uxpInstaller.js';
 
 const args = process.argv.slice(2);
 const hasFlag = (...names) => names.some((name) => args.includes(name));
@@ -151,6 +151,22 @@ function numericOrStringFlag(name) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function hasValueFlag(name) {
+  return args.some((arg) => arg === name || arg.startsWith(`${name}=`));
+}
+
+function requiredPathFlag(name) {
+  const index = args.findIndex((arg) => arg === name || arg.startsWith(`${name}=`));
+  const value = args[index].includes('=')
+    ? args[index].slice(args[index].indexOf('=') + 1)
+    : args[index + 1];
+  const path = typeof value === 'string' ? value.trim() : '';
+  if (!path || path.startsWith('-')) {
+    throw new Error(`${name} requires a non-empty CCX path.`);
+  }
+  return path;
+}
+
 function configureClientsCli(remove) {
   const report = configureClients({
     command: executablePath(),
@@ -166,12 +182,18 @@ function configureClientsCli(remove) {
 
 function uxpInstallerCli(remove) {
   const flag = remove ? '--remove-uxp' : '--install-uxp';
-  const ccxPath = numericOrStringFlag(flag);
+  let ccxPath;
+  try {
+    ccxPath = requiredPathFlag(flag);
+  } catch (error) {
+    console.error(`[${APP_NAME}] ${error.message}`);
+    console.error(`Usage: ${APP_NAME} ${flag} <ccx-path>`);
+    return 2;
+  }
   const operation = remove ? removeCcx : installCcx;
   const result = operation({ ccxPath, upiaPath: findUpia() });
   console.log(`${result.status}: ${ccxPath}${result.error ? ` (${result.error})` : ''}`);
-  if (result.status === (remove ? 'removed' : 'installed')) return 0;
-  return remove ? 4 : 3;
+  return uxpExitCode(result, remove);
 }
 
 async function runSelftestCli() {
@@ -293,11 +315,11 @@ async function main() {
     process.exitCode = configureClientsCli(true);
     return;
   }
-  if (numericOrStringFlag('--install-uxp')) {
+  if (hasValueFlag('--install-uxp')) {
     process.exitCode = uxpInstallerCli(false);
     return;
   }
-  if (numericOrStringFlag('--remove-uxp')) {
+  if (hasValueFlag('--remove-uxp')) {
     process.exitCode = uxpInstallerCli(true);
     return;
   }

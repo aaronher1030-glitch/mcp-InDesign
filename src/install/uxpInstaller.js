@@ -6,7 +6,8 @@ const RELATIVE_UPIA = win32.join('Adobe', 'Adobe Desktop Common', 'RemoteCompone
 
 export function findUpia({ env = process.env, platform = process.platform, exists = existsSync } = {}) {
   if (platform !== 'win32') return null;
-  const roots = [env.ProgramFiles, env['ProgramFiles(x86)']].filter(Boolean);
+  const roots = [env.ProgramFiles, env['ProgramFiles(x86)']]
+    .filter((root) => typeof root === 'string' && win32.isAbsolute(root));
   for (const root of roots) {
     const candidate = win32.join(root, 'Common Files', RELATIVE_UPIA);
     if (exists(candidate)) return candidate;
@@ -32,4 +33,9 @@ export function removeCcx({ ccxPath, upiaPath, execFile = execFileSync } = {}) {
   } catch (error) {
     return { status: 'fallback_required', upiaPath, error: error.message };
   }
+}
+
+export function uxpExitCode(result, remove = false) {
+  if (result.status === (remove ? 'removed' : 'installed')) return 0;
+  return remove ? 4 : 3;
 }

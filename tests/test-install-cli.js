@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { uxpExitCode } from '../src/install/uxpInstaller.js';
 
 const ROOT = dirname(dirname(fileURLToPath(new URL('../src/index.js', import.meta.url))));
 const ENTRY = join(ROOT, 'src', 'index.js');
@@ -144,6 +145,42 @@ test('--help lists all installer modes', (t) => {
   assert.match(result.stdout, /--remove-clients/);
   assert.match(result.stdout, /--install-uxp <ccx-path>/);
   assert.match(result.stdout, /--remove-uxp <ccx-path>/);
+});
+
+for (const flag of ['--install-uxp', '--remove-uxp']) {
+  test(`${flag} rejects missing, blank, and option-like CCX paths`, async (t) => {
+    const cases = [
+      ['missing value', [flag]],
+      ['empty equals value', [`${flag}=`]],
+      ['blank equals value', [`${flag}=   `]],
+      ['option-like next value', [flag, '--selftest']],
+      ['option-like equals value', [`${flag}=--selftest`]],
+    ];
+    for (const [name, flags] of cases) {
+      await t.test(name, (t) => {
+        const profile = tempProfile(t);
+        const result = runCli(profile, flags);
+
+        assertCompleted(result);
+        assert.equal(result.status, 2, result.stderr);
+        assert.match(result.stderr, new RegExp(`${flag} requires a non-empty CCX path`));
+        assert.match(result.stderr, /Usage: .*--(?:install|remove)-uxp <ccx-path>/);
+        assert.doesNotMatch(result.stdout, /fallback_required|live self test/);
+      });
+    }
+  });
+}
+
+test('UPIA CLI exit-code mapping runs on every platform', () => {
+  const cases = [
+    [{ status: 'installed' }, false, 0],
+    [{ status: 'fallback_required' }, false, 3],
+    [{ status: 'removed' }, true, 0],
+    [{ status: 'fallback_required' }, true, 4],
+  ];
+  for (const [result, remove, expected] of cases) {
+    assert.equal(uxpExitCode(result, remove), expected);
+  }
 });
 
 test('--install-uxp returns fallback exit code 3 off Windows', { skip: process.platform === 'win32' }, (t) => {
