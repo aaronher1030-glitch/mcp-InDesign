@@ -10,7 +10,9 @@ function installerSource() {
   return readFileSync(SOURCE_URL, 'utf8')
     .replaceAll('{#MyAppExeName}', 'InDesignAaronV1.1.exe')
     .replaceAll('{#MyAppName}', 'InDesignAaronV1.1')
-    .replaceAll('{#InstalledCcxName}', 'com.ads.indesign-bridge_ID.ccx');
+    .replaceAll('{#InstalledCcxName}', 'com.ads.indesign-bridge_ID.ccx')
+    .replaceAll('{#InstalledInDesignPathFile}', 'indesign-path.txt')
+    .replaceAll('{#OwnedDesktopFallbacks}', 'owned-desktop-fallbacks.txt');
 }
 
 function pascalRoutine(source, declaration) {
@@ -101,6 +103,7 @@ test('installer source has explicit SEA, fallback, completion, and safe uninstal
   const generateConfig = pascalRoutine(source, 'function GeneratePortableConfig: Integer;');
   const saveInDesignPath = pascalRoutine(source, 'procedure SaveDetectedInDesignPath;');
   const installComponents = pascalRoutine(source, 'procedure InstallComponents;');
+  const removeComponents = pascalRoutine(source, 'procedure RemoveComponents;');
 
   assert.match(source, /GetVersionComponents\(/);
   assert.match(source, /MajorVersion\s*>=\s*18/);
@@ -109,21 +112,21 @@ test('installer source has explicit SEA, fallback, completion, and safe uninstal
   assert.match(initializeSetup, /InDesignExe\s*:=\s*DetectInDesign;/);
   assert.match(source, /#define InstalledInDesignPathFile\s+"indesign-path\.txt"/);
   assert.match(saveInDesignPath, /ConfigLines\[0\]\s*:=\s*InDesignExe;/);
-  assert.match(saveInDesignPath, /SaveStringsToUTF8FileWithoutBOM\([\s\S]*?InstalledInDesignPathFile/);
+  assert.match(saveInDesignPath, /SaveStringsToUTF8FileWithoutBOM\([\s\S]*?indesign-path\.txt/);
   assert.match(installComponents, /SaveDetectedInDesignPath;/);
-  assert.match(source, /--install-plugin/);
-  assert.match(source, /--install-uxp/);
-  assert.match(source, /--configure-clients/);
+  assert.match(installComponents, /--install-plugin/);
+  assert.match(installComponents, /--install-uxp/);
+  assert.match(installComponents, /--configure-clients/);
   assert.match(generateConfig, /JsonEscape\(ExpandConstant\('\{app\}\\InDesignAaronV1\.1\.exe'\)\)/);
   assert.match(source, /SaveStringsToUTF8FileWithoutBOM\(/);
   assert.match(source, /mcpServers/);
-  assert.match(source, /Install InDesign Copilot\.ccx/);
+  assert.match(installComponents, /Install InDesign Copilot\.ccx/);
   assert.match(installComponents, /if\s+PluginResult\s*=\s*3\s+then/);
   assert.match(installComponents, /else\s+if\s+PluginResult\s*<>\s*0\s+then\s*begin\s*PluginNeedsFallback\s*:=\s*True;/);
-  assert.match(source, /CopyFile\(/);
-  assert.match(source, /--remove-uxp/);
-  assert.match(source, /--remove-clients/);
-  assert.match(source, /Manage Plugins/);
+  assert.match(installComponents, /CopyFile\(/);
+  assert.match(removeComponents, /--remove-uxp/);
+  assert.match(removeComponents, /--remove-clients/);
+  assert.match(removeComponents, /Manage Plugins/);
   assert.match(source, /CurPageChanged\([^)]*\)/);
   assert.match(source, /CurPageID\s*=\s*wpFinished/);
   assert.match(source, /Server:/);
@@ -131,6 +134,57 @@ test('installer source has explicit SEA, fallback, completion, and safe uninstal
   assert.match(source, /MCP configuration:/);
   assert.match(source, /Bridge:/);
   assert.doesNotMatch(source, /\btaskkill\b|\bTerminateProcess\b/i);
+});
+
+test('installer fallback creation is exclusive and retries a raced destination without deleting existing files', () => {
+  const source = installerSource();
+  const installComponents = pascalRoutine(source, 'procedure InstallComponents;');
+
+  assert.doesNotMatch(installComponents, /CopyFile\([^;]*,\s*False\)/);
+  assert.match(installComponents, /if\s+CopyFile\(CcxFile,\s*DesktopCcx,\s*True\)\s+then\s+break\s+else\s+if\s+FileExists\(DesktopCcx\)\s+then\s*begin[\s\S]*?Install InDesign Copilot-[\s\S]*?IntToStr\(FallbackIndex\)/);
+  assert.match(installComponents, /else\s+begin\s*DesktopCcx\s*:=\s*'';\s*break;\s*end;/);
+
+  const exclusiveCopy = installComponents.indexOf('CopyFile(CcxFile, DesktopCcx, True)');
+  const ownershipRecord = installComponents.indexOf('RecordOwnedDesktopFallback(DesktopCcx)');
+  assert.ok(exclusiveCopy >= 0 && ownershipRecord > exclusiveCopy,
+    'ownership must be recorded only after exclusive creation succeeds');
+  assert.match(installComponents, /if\s+RecordOwnedDesktopFallback\(DesktopCcx\)\s+then\s*begin\s*DesktopFallbackPath\s*:=\s*DesktopCcx;[\s\S]*?else\s+begin\s*if\s+not\s+DeleteFile\(DesktopCcx\)\s+then\s+Log\(/);
+});
+
+test('fallback ownership validation accepts only the base or canonical numbered filename grammar', () => {
+  const source = installerSource();
+  const validateOwnedPath = pascalRoutine(source, 'function IsOwnedDesktopFallbackPath(');
+  const validateName = pascalRoutine(source, 'function IsInstallInDesignCopilotFallbackName(');
+
+  assert.match(validateOwnedPath, /IsInstallInDesignCopilotFallbackName\(FileName\)/);
+  assert.match(validateName, /CompareText\(FileName,\s*'Install InDesign Copilot\.ccx'\)\s*=\s*0/);
+  assert.match(validateName, /CompareText\(Copy\(FileName,\s*1,\s*Length\('Install InDesign Copilot-'\)\),\s*'Install InDesign Copilot-'\)\s*<>\s*0/);
+  assert.match(validateName, /CompareText\(Copy\(FileName,\s*Length\(FileName\)\s*-\s*Length\('\.ccx'\)\s*\+\s*1,\s*Length\('\.ccx'\)\),\s*'\.ccx'\)\s*<>\s*0/);
+  assert.doesNotMatch(validateName, /\nconst\n/, 'Pascal Script routines must not declare local const blocks');
+  // Reject hostile/unrelated suffixes such as Copilot-backup.ccx, -1.ccx,
+  // -02.ccx, -2.ccx.exe, and Copilot.ccx.evil by requiring canonical digits >= 2.
+  assert.match(validateName, /Digits\[1\]\s*<\s*'2'/);
+  assert.match(validateName, /Digits\[1\]\s*>\s*'9'/);
+  assert.match(validateName, /for\s+Index\s*:=\s*1\s+to\s+Length\(Digits\)\s+do[\s\S]*?Digits\[Index\]\s*<\s*'0'[\s\S]*?Digits\[Index\]\s*>\s*'9'/);
+  assert.doesNotMatch(validateOwnedPath, /CompareText\(Copy\(FileName,\s*1,\s*Length\('Install InDesign Copilot'\)/);
+});
+
+test('runtime-generated InDesign path is removed by uninstall', () => {
+  const source = installerSource();
+  const uninstallDelete = section(source, 'UninstallDelete', 'Code');
+
+  assert.match(uninstallDelete, /Type:\s*files;\s*Name:\s*"\{app\}\\indesign-path\.txt"/);
+});
+
+test('failed InDesign path replacement removes stale state before writing and reports it truthfully', () => {
+  const source = installerSource();
+  const saveInDesignPath = pascalRoutine(source, 'procedure SaveDetectedInDesignPath;');
+  const reportFinished = pascalRoutine(source, 'procedure ReportFinished;');
+
+  assert.match(saveInDesignPath, /InDesignPathWriteResult\s*:=\s*1;[\s\S]*?FileExists\(ExpandConstant\('\{app\}\\indesign-path\.txt'\)\)\s+and\s+not\s+DeleteFile\(ExpandConstant\('\{app\}\\indesign-path\.txt'\)\)\s+then\s*begin[\s\S]*?exit;\s*end;[\s\S]*?SaveStringsToUTF8FileWithoutBOM\(/);
+  assert.match(saveInDesignPath, /else\s+InDesignPathWriteResult\s*:=\s*2;/);
+  assert.match(reportFinished, /if\s+InDesignPathWriteResult\s*=\s*1\s+then[\s\S]*?stale path/);
+  assert.match(reportFinished, /else\s+if\s+InDesignPathWriteResult\s*<>\s*0\s+then[\s\S]*?default discovery instead/);
 });
 
 test('installer owns only uniquely named Desktop fallbacks and validates them before uninstall', () => {
@@ -145,11 +199,10 @@ test('installer owns only uniquely named Desktop fallbacks and validates them be
   assert.match(source, /#define OwnedDesktopFallbacks\s+"[^"]+"/);
   assert.match(installComponents, /while\s+FileExists\(DesktopCcx\)\s+do\s*begin/);
   assert.match(installComponents, /DesktopCcx\s*:=[\s\S]*?Install InDesign Copilot-[\s\S]*?IntToStr\(/);
-  assert.match(installComponents, /CopyFile\(CcxFile,\s*DesktopCcx,\s*False\)/);
   assert.match(recordOwnership, /FileSHA256\(DesktopPath,\s*Hash\)/);
   assert.match(fileHash, /GetSHA256OfFile\(FileName\)/);
-  assert.match(recordOwnership, /SaveStringsToUTF8FileWithoutBOM\([^;]*OwnedDesktopFallbacks[^;]*True\)/);
-  assert.match(installComponents, /if\s+RecordOwnedDesktopFallback\(DesktopCcx\)\s+then\s*begin\s*DesktopFallbackPath\s*:=\s*DesktopCcx;[\s\S]*?else\s*begin\s*DeleteFile\(DesktopCcx\);/);
+  assert.match(recordOwnership, /SaveStringsToUTF8FileWithoutBOM\([^;]*owned-desktop-fallbacks\.txt[^;]*True\)/);
+  assert.match(installComponents, /if\s+RecordOwnedDesktopFallback\(DesktopCcx\)\s+then\s*begin\s*DesktopFallbackPath\s*:=\s*DesktopCcx;[\s\S]*?else\s*begin\s*if\s+not\s+DeleteFile\(DesktopCcx\)\s+then\s+Log\(/);
   assert.match(removeComponents, /RemoveOwnedDesktopFallbacks;/);
   assert.match(removeOwnedFallbacks, /LoadStringsFromFile\([^;]*ManifestPath/);
   assert.match(validateOwnedPath, /CompareText\(ExtractFilePath\(OwnedPath\),\s*DesktopPrefix\)\s*=\s*0/);

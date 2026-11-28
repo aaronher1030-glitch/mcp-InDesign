@@ -67,6 +67,7 @@ Name: "launchcopilot"; Description: "Start InDesign Copilot after setup"; GroupD
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\plugin"
+Type: files; Name: "{app}\{#InstalledInDesignPathFile}"
 
 [Code]
 var
@@ -283,6 +284,15 @@ procedure SaveDetectedInDesignPath;
 var
   ConfigLines: TArrayOfString;
 begin
+  // Remove an upgrade's prior record first. If the replacement write fails,
+  // --doctor must fall back to discovery rather than prefer a stale executable.
+  InDesignPathWriteResult := 1;
+  if FileExists(ExpandConstant('{app}\{#InstalledInDesignPathFile}')) and
+    not DeleteFile(ExpandConstant('{app}\{#InstalledInDesignPathFile}')) then
+  begin
+    Log('Could not remove prior InDesign path record; it may remain in use');
+    exit;
+  end;
   // The packaged --doctor command prefers this exact path, including installs
   // on drives and folders that source/default discovery does not scan.
   SetLength(ConfigLines, 2);
@@ -292,7 +302,7 @@ begin
     ExpandConstant('{app}\{#InstalledInDesignPathFile}'), ConfigLines, False) then
     InDesignPathWriteResult := 0
   else
-    InDesignPathWriteResult := 1;
+    InDesignPathWriteResult := 2;
   Log('Save detected InDesign path => ' + IntToStr(InDesignPathWriteResult));
 end;
 
@@ -325,6 +335,42 @@ begin
     ExpandConstant('{app}\{#OwnedDesktopFallbacks}'), OwnershipLines, True);
 end;
 
+function IsInstallInDesignCopilotFallbackName(const FileName: String): Boolean;
+var
+  Digits: String;
+  Index: Integer;
+begin
+  Result := False;
+  if CompareText(FileName, 'Install InDesign Copilot.ccx') = 0 then
+  begin
+    Result := True;
+    exit;
+  end;
+
+  if Length(FileName) <= Length('Install InDesign Copilot-') + Length('.ccx') then
+    exit;
+  if CompareText(Copy(FileName, 1, Length('Install InDesign Copilot-')),
+    'Install InDesign Copilot-') <> 0 then
+    exit;
+  if CompareText(Copy(FileName, Length(FileName) - Length('.ccx') + 1,
+    Length('.ccx')), '.ccx') <> 0 then
+    exit;
+
+  Digits := Copy(FileName, Length('Install InDesign Copilot-') + 1,
+    Length(FileName) - Length('Install InDesign Copilot-') - Length('.ccx'));
+  // Installer numbering starts at 2 and IntToStr never emits leading zeroes.
+  // Everything between the prefix and extension must therefore be a canonical
+  // decimal number >= 2; unrelated suffixes and alternate spellings are rejected.
+  if (Digits[1] < '2') or (Digits[1] > '9') then
+    exit;
+  for Index := 1 to Length(Digits) do
+  begin
+    if (Digits[Index] < '0') or (Digits[Index] > '9') then
+      exit;
+  end;
+  Result := True;
+end;
+
 function IsOwnedDesktopFallbackPath(const OwnedPath: String): Boolean;
 var
   DesktopPrefix: String;
@@ -334,9 +380,7 @@ begin
   FileName := ExtractFileName(OwnedPath);
   Result := (OwnedPath <> '') and
     (CompareText(ExtractFilePath(OwnedPath), DesktopPrefix) = 0) and
-    (CompareText(Copy(FileName, 1, Length('Install InDesign Copilot')),
-      'Install InDesign Copilot') = 0) and
-    (CompareText(ExtractFileExt(FileName), '.ccx') = 0);
+    IsInstallInDesignCopilotFallbackName(FileName);
 end;
 
 procedure RemoveOwnedDesktopFallbacks;
@@ -416,7 +460,31 @@ begin
         IntToStr(FallbackIndex) + '.ccx');
       FallbackIndex := FallbackIndex + 1;
     end;
-    if CopyFile(CcxFile, DesktopCcx, False) then
+    while True do
+    begin
+      if FileExists(DesktopCcx) then
+      begin
+        DesktopCcx := ExpandConstant('{userdesktop}\Install InDesign Copilot-' +
+          IntToStr(FallbackIndex) + '.ccx');
+        FallbackIndex := FallbackIndex + 1;
+      end
+      else if CopyFile(CcxFile, DesktopCcx, True) then
+        break
+      else if FileExists(DesktopCcx) then
+      begin
+        // Another process created this name after the existence check. Never
+        // overwrite it; retry the next generated name instead.
+        DesktopCcx := ExpandConstant('{userdesktop}\Install InDesign Copilot-' +
+          IntToStr(FallbackIndex) + '.ccx');
+        FallbackIndex := FallbackIndex + 1;
+      end
+      else
+      begin
+        DesktopCcx := '';
+        break;
+      end;
+    end;
+    if DesktopCcx <> '' then
     begin
       if RecordOwnedDesktopFallback(DesktopCcx) then
       begin
@@ -425,9 +493,10 @@ begin
       end
       else
       begin
-        DeleteFile(DesktopCcx);
+        if not DeleteFile(DesktopCcx) then
+          Log('Could not remove untracked plugin fallback copy: ' + DesktopCcx);
         PluginResult := 1;
-        Log('Could not record plugin fallback ownership; removed the new copy');
+        Log('Could not record plugin fallback ownership; discarded the new copy');
       end;
     end
     else
@@ -497,7 +566,10 @@ begin
   if WizardIsTaskSelected('launchcopilot') and (InDesignResult <> 0) then
     Report := Report + #13#10 + 'InDesign launch failed; setup will continue. Launch InDesign manually.';
 
-  if InDesignPathWriteResult <> 0 then
+  if InDesignPathWriteResult = 1 then
+    Report := Report + #13#10 + 'InDesign path: Could not remove the prior executable ' +
+      'path record; Check Installation may still prefer that stale path.'
+  else if InDesignPathWriteResult <> 0 then
     Report := Report + #13#10 + 'InDesign path: Could not save the detected executable path; ' +
       'Check Installation will use default discovery instead.';
 
