@@ -205,6 +205,7 @@ export async function buildInstaller({
     if (release) await sign({ files: [seaPath], mode: selectedMode, env });
 
     runNpm('smoke', [seaPath]);
+    runNpm('prepackage:uxp');
     const { ccxPath } = await packageUxpImpl({ root: resolvedRoot, outputDir: uxpOutputDir });
     if (typeof ccxPath !== 'string' || !ccxPath || !existsSync(ccxPath)) {
       throw new Error(`UXP packaging did not produce ${ccxPath || 'a .ccx file'}`);

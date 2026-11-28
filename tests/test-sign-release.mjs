@@ -400,7 +400,7 @@ test('installer builds require Windows x64 and Node 24 or newer', async (t) => {
   }
 });
 
-test('unsigned pipeline compiles and publishes only after staging with an unsigned basename', async (t) => {
+test('unsigned pipeline runs UXP helper setup after smoke and before direct packaging', async (t) => {
   const fixture = buildFixture(t);
   const summary = await buildInstaller(fixture.inputs);
   const setupPath = join(fixture.outputDir, `${setupName}-unsigned.exe`);
@@ -410,8 +410,14 @@ test('unsigned pipeline compiles and publishes only after staging with an unsign
   assert.equal(existsSync(fixture.stagingDirectory()), false);
   assert.equal(fixture.events.some((event) => event.type === 'sign'), false);
   assert.deepEqual(fixture.events.filter((event) => event.type === 'exec' && event.args[1] === 'run').map((event) => event.args[2]), [
-    'build', 'smoke',
+    'build', 'smoke', 'prepackage:uxp',
   ]);
+  const smokeIndex = fixture.events.findIndex((event) => event.type === 'exec' && event.args[2] === 'smoke');
+  const helperIndex = fixture.events.findIndex((event) => event.type === 'exec' && event.args[2] === 'prepackage:uxp');
+  const packageIndex = fixture.events.findIndex((event) => event.type === 'package');
+  assert.ok(smokeIndex !== -1 && smokeIndex < helperIndex, 'UXP helper setup must run after smoke');
+  assert.ok(helperIndex !== -1 && helperIndex < packageIndex, 'direct packaging must run after UXP helper setup');
+  assert.deepEqual(fixture.events[helperIndex].args, [fixture.env.npm_execpath, 'run', 'prepackage:uxp', '--']);
   assert.deepEqual(fixture.events.filter((event) => event.type === 'package'), [{
     type: 'package',
     root: fixture.root,
@@ -440,6 +446,26 @@ test('unsigned pipeline compiles and publishes only after staging with an unsign
   assert.equal(summary.artifacts.find(({ kind }) => kind === 'installer').path, setupPath);
   assert.equal(JSON.parse(fixture.summaries.at(-1)).signed, false);
   assert.doesNotMatch(fixture.summaries.join('\n'), /build-password-that-must-not-leak/);
+});
+
+test('failed UXP helper setup stops before packaging, compilation, and publication', async (t) => {
+  const fixture = buildFixture(t);
+  const execFile = fixture.inputs.execFile;
+  fixture.inputs.execFile = (file, args, options) => {
+    if (args[1] === 'run' && args[2] === 'prepackage:uxp') {
+      fixture.events.push({ type: 'exec', file, args });
+      throw Object.assign(new Error('raw helper diagnostics must not escape'), { status: 1 });
+    }
+    return execFile(file, args, options);
+  };
+
+  await assert.rejects(buildInstaller(fixture.inputs), /npm run prepackage:uxp failed \(exit 1\)/);
+  assert.deepEqual(fixture.events.filter((event) => event.type === 'exec' && event.args[1] === 'run').map((event) => event.args[2]), [
+    'build', 'smoke', 'prepackage:uxp',
+  ]);
+  assert.equal(fixture.events.some((event) => event.type === 'package'), false);
+  assert.equal(fixture.events.some((event) => event.type === 'exec' && event.file.includes('ISCC')), false);
+  assert.equal(existsSync(fixture.outputDir), false);
 });
 
 test('installer uses the exact UXP artifact returned by packaging instead of a stale expected path', async (t) => {
