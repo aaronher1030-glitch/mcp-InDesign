@@ -19,6 +19,9 @@
 #ifndef OutputDir
   #define OutputDir "..\dist\installer"
 #endif
+#ifndef OutputSuffix
+  #define OutputSuffix "-unsigned"
+#endif
 
 [Setup]
 AppId={#MyAppName}
@@ -42,7 +45,7 @@ UsePreviousAppDir=yes
 UsePreviousGroup=yes
 UsePreviousTasks=no
 OutputDir={#OutputDir}
-OutputBaseFilename=InDesignAaronV1.1-{#AppVersion}-windows-setup-unsigned
+OutputBaseFilename=InDesignAaronV1.1-{#AppVersion}-windows-setup{#OutputSuffix}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
