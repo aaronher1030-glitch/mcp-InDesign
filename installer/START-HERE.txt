@@ -57,10 +57,11 @@ You do not need the UXP Developer Tool for this fallback.
 
 Windows and Adobe prompts
 -------------------------
-Windows SmartScreen may warn because a local, unsigned setup was downloaded.
-Continue only if you trust the source of the file. Adobe may also show a plugin
-trust prompt when the .ccx is opened. These prompts are separate from model
-credentials.
+Windows SmartScreen may warn about a downloaded setup until its publisher has
+enough reputation, even when the setup is validly signed. Local developer builds
+may be unsigned; check the file's digital signature and publisher, and continue
+only if you trust the source. Adobe may also show a plugin trust prompt when the
+.ccx is opened. These prompts are separate from model credentials.
 
 Checks and removal
 ------------------

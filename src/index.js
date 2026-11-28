@@ -111,7 +111,7 @@ async function printDoctor() {
   }
   if (!status) console.log('Bridge: not running');
   else console.log(`Bridge: running, plugin connected: ${status.connected === true}`);
-  console.log('Plugin requirement: InDesign 2021 (17.0) or newer with UXP support.');
+  console.log('Plugin requirement: InDesign 2023 (18.0) or newer with UXP support.');
 }
 
 function numericFlag(name, fallback) {

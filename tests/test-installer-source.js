@@ -75,7 +75,7 @@ test('installer source installs the real payload and creates required shortcuts 
   const source = installerSource();
 
   assert.match(source, /Source:\s*"\{#SeaExe\}";\s*DestDir:\s*"\{app\}";/);
-  assert.match(source, /Source:\s*"\{#CcxPath\}";\s*DestDir:\s*"\{app\}";/);
+  assert.match(source, /Source:\s*"\{#CcxPath\}";\s*DestDir:\s*"\{app\}";\s*DestName:\s*"com\.ads\.indesign-bridge_ID\.ccx";/);
   assert.match(source, /Source:\s*"START-HERE\.txt";\s*DestDir:\s*"\{app\}";/);
   assert.match(source, /Source:\s*"[^"]*mcp-config\.json";\s*DestDir:\s*"\{app\}";/);
   assert.match(source, /Name:\s*"[^"]*\\InDesign Copilot"/);
@@ -226,5 +226,12 @@ test('START-HERE covers plugin, credentials, client restart, portable config, an
   assert.match(text, /mcp-config\.json/);
   assert.match(text, /Install InDesign Copilot\*?\.ccx/);
   assert.match(text, /SmartScreen/i);
-  assert.match(text, /Adobe trust prompt/i);
+  const smartScreenGuidance = text.match(/Windows SmartScreen[\s\S]*?\.ccx is opened/i);
+  assert.ok(smartScreenGuidance, 'SmartScreen guidance must distinguish signed and unsigned setups');
+  assert.match(smartScreenGuidance[0], /publisher has\s+enough reputation/i);
+  assert.match(smartScreenGuidance[0], /validly signed/i);
+  assert.match(smartScreenGuidance[0], /developer builds\s+may be unsigned/i);
+  assert.match(smartScreenGuidance[0], /trust the source/i);
+  assert.doesNotMatch(text, /because a local, unsigned setup was downloaded/i);
+  assert.match(text, /Adobe may also show a plugin\s+trust prompt/i);
 });

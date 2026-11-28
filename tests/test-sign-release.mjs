@@ -331,7 +331,6 @@ function buildFixture(t, options = {}) {
     if (args[1] === 'run') {
       const script = args[2];
       if (script === 'build') writeFile(seaPath, 'sea executable');
-      if (script === 'package:uxp') writeFile(ccxPath, 'ccx package');
       return { status: 0 };
     }
     assert.equal(file, isccPath);
@@ -359,6 +358,11 @@ function buildFixture(t, options = {}) {
     execFile,
     sign,
     locateIscc: () => isccPath,
+    packageUxp: async ({ root, outputDir }) => {
+      events.push({ type: 'package', root, outputDir });
+      writeFile(ccxPath, 'ccx package');
+      return { ccxPath, cliPath: 'C:\\UXP\\uxp.js' };
+    },
     tempRoot: directory,
     log: (value) => summaries.push(value),
     ...inputOverrides,
@@ -406,8 +410,13 @@ test('unsigned pipeline compiles and publishes only after staging with an unsign
   assert.equal(existsSync(fixture.stagingDirectory()), false);
   assert.equal(fixture.events.some((event) => event.type === 'sign'), false);
   assert.deepEqual(fixture.events.filter((event) => event.type === 'exec' && event.args[1] === 'run').map((event) => event.args[2]), [
-    'build', 'smoke', 'package:uxp',
+    'build', 'smoke',
   ]);
+  assert.deepEqual(fixture.events.filter((event) => event.type === 'package'), [{
+    type: 'package',
+    root: fixture.root,
+    outputDir: join(fixture.root, 'dist', 'uxp'),
+  }]);
   assert.equal(fixture.events.at(-1).file, 'C:\\Inno Setup 7\\ISCC.exe');
   for (const name of ['AppVersion', 'SeaExe', 'CcxPath', 'OutputDir']) {
     const value = fixture.events.at(-1).args.find((argument) => argument.startsWith(`/D${name}=`));
@@ -431,6 +440,49 @@ test('unsigned pipeline compiles and publishes only after staging with an unsign
   assert.equal(summary.artifacts.find(({ kind }) => kind === 'installer').path, setupPath);
   assert.equal(JSON.parse(fixture.summaries.at(-1)).signed, false);
   assert.doesNotMatch(fixture.summaries.join('\n'), /build-password-that-must-not-leak/);
+});
+
+test('installer uses the exact UXP artifact returned by packaging instead of a stale expected path', async (t) => {
+  const packagedName = 'differently-named_ID.ccx';
+  const packageCalls = [];
+  const fixture = buildFixture(t, {
+    packageUxp: async (options) => {
+      packageCalls.push(options);
+      const actualCcxPath = join(options.root, 'dist', 'uxp', packagedName);
+      writeFile(actualCcxPath, 'fresh package');
+      return { ccxPath: actualCcxPath, cliPath: 'C:\\UXP\\uxp.js' };
+    },
+  });
+  const packagedCcxPath = join(fixture.root, 'dist', 'uxp', packagedName);
+  writeFile(fixture.ccxPath, 'stale expected package');
+
+  const summary = await buildInstaller(fixture.inputs);
+  const compileEvent = fixture.events.at(-1);
+
+  assert.deepEqual(packageCalls, [{
+    root: fixture.root,
+    outputDir: join(fixture.root, 'dist', 'uxp'),
+  }]);
+  assert.equal(compileEvent.file, 'C:\\Inno Setup 7\\ISCC.exe');
+  assert.equal(definition(compileEvent.args, 'CcxPath'), packagedCcxPath);
+  assert.notEqual(definition(compileEvent.args, 'CcxPath'), fixture.ccxPath);
+  const packagedArtifact = summary.artifacts.find(({ kind }) => kind === 'uxp');
+  assert.equal(packagedArtifact.path, packagedCcxPath);
+  assert.equal(packagedArtifact.sha256, createHash('sha256').update('fresh package').digest('hex'));
+});
+
+test('installer rejects a missing returned UXP artifact even when the expected path is stale', async (t) => {
+  const fixture = buildFixture(t, {
+    packageUxp: async (options) => ({
+      ccxPath: join(options.root, 'dist', 'uxp', 'missing_ID.ccx'),
+      cliPath: 'C:\\UXP\\uxp.js',
+    }),
+  });
+  writeFile(fixture.ccxPath, 'stale expected package');
+
+  await assert.rejects(buildInstaller(fixture.inputs), /UXP packaging did not produce .*missing_ID\.ccx/);
+  assert.equal(fixture.events.some((event) => event.type === 'exec' && event.file.includes('ISCC')), false);
+  assert.equal(existsSync(fixture.outputDir), false);
 });
 
 test('release pipeline signs the SEA first, compiles with a signed basename, then signs setup', async (t) => {

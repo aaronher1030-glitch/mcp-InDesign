@@ -15,10 +15,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { preflightSigning, signAndVerify } from './sign-release.mjs';
+import { packageUxp as packageUxpPayload } from './package-uxp.mjs';
 
 const APP_NAME = 'InDesignAaronV1.1';
 const SEA_NAME = `${APP_NAME}.exe`;
-const CCX_NAME = 'com.ads.indesign-bridge_ID.ccx';
 
 function environmentValue(env, name) {
   const key = Object.keys(env).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
@@ -159,6 +159,7 @@ export async function buildInstaller({
   execFile = execFileSync,
   sign = signAndVerify,
   locateIscc = findIscc,
+  packageUxp: packageUxpImpl = packageUxpPayload,
   tempRoot = tmpdir(),
   log = console.log,
 } = {}) {
@@ -174,7 +175,7 @@ export async function buildInstaller({
 
   const resolvedRoot = resolve(root);
   const seaPath = resolve(resolvedRoot, '..', SEA_NAME);
-  const ccxPath = join(resolvedRoot, 'dist', 'uxp', CCX_NAME);
+  const uxpOutputDir = join(resolvedRoot, 'dist', 'uxp');
   const outputDir = join(resolvedRoot, 'dist', 'installer');
   const packageJson = JSON.parse(readFileSync(join(resolvedRoot, 'package.json'), 'utf8'));
   const suffix = release ? '-signed' : '-unsigned';
@@ -204,8 +205,10 @@ export async function buildInstaller({
     if (release) await sign({ files: [seaPath], mode: selectedMode, env });
 
     runNpm('smoke', [seaPath]);
-    runNpm('package:uxp');
-    if (!existsSync(ccxPath)) throw new Error(`UXP packaging did not produce ${CCX_NAME}`);
+    const { ccxPath } = await packageUxpImpl({ root: resolvedRoot, outputDir: uxpOutputDir });
+    if (typeof ccxPath !== 'string' || !ccxPath || !existsSync(ccxPath)) {
+      throw new Error(`UXP packaging did not produce ${ccxPath || 'a .ccx file'}`);
+    }
 
     writeFileSync(stagingConfigPath, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
     runCommand({

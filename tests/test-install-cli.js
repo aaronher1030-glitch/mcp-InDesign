@@ -135,6 +135,16 @@ test('--remove-clients --all-clients removes only entries owned by this executab
   }
 });
 
+test('--doctor reports the installer and manifest InDesign minimum', (t) => {
+  const profile = tempProfile(t);
+  const result = runCli(profile, ['--doctor']);
+
+  assertCompleted(result);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Plugin requirement: InDesign 2023 \(18\.0\) or newer with UXP support\./);
+  assert.doesNotMatch(result.stdout, /InDesign 2021 \(17\.0\)/);
+});
+
 test('--help lists all installer modes', (t) => {
   const profile = tempProfile(t);
   const result = runCli(profile, ['--help']);
