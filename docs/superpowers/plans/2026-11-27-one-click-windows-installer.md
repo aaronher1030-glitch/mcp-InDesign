@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Windows 10/11 x64; InDesign 2022 (18.0) or newer.
+- Windows 10/11 x64; InDesign 2023 (18.0) or newer.
 - Per-user install under `%LOCALAPPDATA%\Programs\InDesignAaronV1.1`.
 - Production plugin installation uses `.ccx` and UPIA; never copy into Adobe's plugin database directly.
 - Preserve unrelated MCP servers and malformed-config recovery behavior.

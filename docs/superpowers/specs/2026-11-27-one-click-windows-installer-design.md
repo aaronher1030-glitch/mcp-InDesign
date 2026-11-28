@@ -11,7 +11,7 @@ portable executable workflows.
 
 ## Constraints
 
-- Target Windows 10/11 x64 and Adobe InDesign 2022 (18.0) or newer. Validation
+- Target Windows 10/11 x64 and Adobe InDesign 2023 (18.0) or newer. Validation
   will use the available InDesign 2024 (19.4) installation.
 - Install per user under `%LOCALAPPDATA%\Programs\InDesignAaronV1.1`; do not
   require administrator rights for the application itself.

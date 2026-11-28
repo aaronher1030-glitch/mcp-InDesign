@@ -2,14 +2,52 @@
 
 ## Setup
 
-1. Windows 10/11 with Adobe InDesign 2022 (18.0) or newer.
-2. Run `InDesignAaronV1.1.exe --install-plugin`, then load `plugin/manifest.json`
-   in the Adobe UXP Developer Tool and open **Window → Plugins → InDesign Copilot**.
-3. Start the executable: `InDesignAaronV1.1.exe --bridge` (panel) or point your
-   MCP client at the executable with no arguments (stdio + embedded bridge).
-4. Check with `InDesignAaronV1.1.exe --doctor`.
+### Normal path: signed per-user installer
 
-No Node.js installation is required on the target machine.
+1. On Windows 10/11 x64, install Adobe InDesign 2023 (18.0) or newer and launch
+   it once so Creative Cloud can finish registration.
+2. From a trusted release, download and run
+   `InDesignAaronV1.1-<version>-windows-setup.exe`. The current pipeline emits
+   the signed release asset as
+   `InDesignAaronV1.1-<version>-windows-setup-signed.exe`; do not substitute an
+   `-unsigned.exe` developer build.
+3. Accept the Windows and Adobe prompts. Setup installs per user, registers the
+   `.ccx` through Adobe UPIA, configures detected MCP clients, and starts the
+   bridge. A signed setup can still show SmartScreen until publisher reputation
+   is established; continue only when the release source is trusted.
+4. Restart Claude Desktop, Cursor, or Qoder so the client reloads its MCP
+   configuration.
+5. Open InDesign **Window → Plugins → InDesign Copilot**. In the panel's
+   **Model** section, enter the model ID and API key. API keys are held in memory
+   for the active chat session and are not persisted by the panel or installer.
+6. Run the Start Menu shortcut **Check Installation**, or run
+   `%LOCALAPPDATA%\Programs\InDesignAaronV1.1\InDesignAaronV1.1.exe --doctor`,
+   to inspect InDesign discovery, bridge status, and the reported plugin
+   connection.
+
+If an `Install InDesign Copilot*.ccx` file appears on the Desktop, UPIA did not
+complete registration and the plugin is not installed yet. Double-click that
+`.ccx`, accept the Adobe trust prompt, wait for Creative Cloud, and restart
+InDesign. No UXP Developer Tool is required. If the Desktop copy is missing,
+open `%LOCALAPPDATA%\Programs\InDesignAaronV1.1\com.ads.indesign-bridge_ID.ccx`
+manually.
+
+No Node.js installation, Adobe UXP Developer Tool, or manual JSON editing is
+required on the normal path. If automatic client configuration reports a
+problem, merge only `mcpServers.indesign` from the generated
+`%LOCALAPPDATA%\Programs\InDesignAaronV1.1\mcp-config.json` into the client's
+existing config, preserving unrelated servers and top-level settings, then
+restart the client. Do not replace the whole client config.
+
+### Manual / developer path
+
+For a portable executable or plugin development, run
+`InDesignAaronV1.1.exe --install-plugin`, load the staged `plugin/manifest.json`
+in Adobe UXP Developer Tool, and open **Window → Plugins → InDesign Copilot**.
+Start the panel bridge with `InDesignAaronV1.1.exe --bridge`, or point an
+external MCP client at the executable with no arguments for stdio plus the
+embedded bridge. Merge only the block printed by
+`InDesignAaronV1.1.exe --print-config` into the client's existing config.
 
 ## External-client sequence
 

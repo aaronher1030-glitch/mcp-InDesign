@@ -29,8 +29,9 @@ InDesign recording. The editable source is in
   verification and rollback.
 - **Direct view** — `preview_layout` renders pages to PNG and opens them in the
   system viewer so you can see the layout without leaving the chat.
-- **Self-installing plugin** — `--install-plugin` writes the UXP plugin next to
-  the executable.
+- **Packaged UXP plugin** — the installer registers the production `.ccx`
+  through Adobe UPIA; the manual flow can stage plugin sources with
+  `--install-plugin`.
 
 The same binary is both server and bridge, so there is no second process to
 start and no Node installation required on the target machine.
@@ -39,82 +40,91 @@ start and no Node installation required on the target machine.
 
 ## Requirements
 
-- Windows 10/11 (the built executable is `win-x64`).
-- Adobe InDesign 2022 (18.0) or newer with UXP plugin support.
-  InDesign 2024 was detected and used on the machine this was built on.
-- Adobe UXP Developer Tool, to load the plugin once.
+- Windows 10/11 x64.
+- Adobe InDesign 2023 (18.0) or newer with UXP plugin support. Launch InDesign
+  once before setup so Creative Cloud can finish registering it.
+- A trusted release installer for the normal path. Node.js, Adobe UXP
+  Developer Tool, and manual MCP JSON editing are not end-user requirements.
 
-## Quick start
+## Quick start — signed per-user installer
 
-1. Put `InDesignAaronV1.1.exe` anywhere, for example
-   `C:\Users\you\Apps\InDesignAaronV1.1\`.
-2. Install the plugin:
+1. Launch Adobe InDesign once.
+2. From a trusted release, download and run
+   `InDesignAaronV1.1-<version>-windows-setup.exe`. The current release pipeline
+   emits the signed asset as
+   `InDesignAaronV1.1-<version>-windows-setup-signed.exe`; use that signed file,
+   not an `-unsigned.exe` developer build.
+3. Accept the Windows and Adobe prompts. Setup installs per user under
+   `%LOCALAPPDATA%\Programs\InDesignAaronV1.1`; it does not require administrator
+   rights for the application.
+4. Restart Claude Desktop, Cursor, or Qoder so the client reloads its MCP
+   configuration.
+5. Open InDesign **Window → Plugins → InDesign Copilot**.
+6. In the panel's **Model** section, enter the model ID and API key, then send a
+   message. API keys are held in memory for the active chat session, are sent
+   only to the configured model endpoint, and are not saved by the panel or
+   installer.
 
-   ```powershell
-   .\InDesignAaronV1.1.exe --install-plugin
-   ```
+### What setup does
 
-   This writes `plugin\manifest.json`, `plugin\index.html` and `plugin\index.js`
-   next to the executable.
-3. Open the UXP Developer Tool → **Add Plugin** → choose that `manifest.json` →
-   **Load**.
-4. Start the bridge:
+- Installs and starts the bridge, with a Startup shortcut for future sign-ins.
+- Registers the packaged `.ccx` through Adobe's Unified Plugin Installer Agent
+  (UPIA) when available.
+- Configures detected MCP clients by merging only the `mcpServers.indesign`
+  entry. Unrelated servers and top-level settings are preserved, and timestamped
+  backups are kept when an existing file changes. If a client cannot be
+  configured automatically, use the generated portable config as described
+  below rather than replacing the client's whole config.
+- Stores no model API keys in the installer, MCP config, plans, artifacts, or
+  logs.
 
-   ```powershell
-   .\InDesignAaronV1.1.exe --bridge
-   ```
+If UPIA is missing or rejects the package, setup copies an owned, exclusively
+created `Install InDesign Copilot.ccx` (or a numbered variant) to the Desktop.
+The plugin is **not installed yet** in that state: double-click the Desktop
+`.ccx`, accept the Adobe trust prompt, wait for Creative Cloud to finish, then
+restart InDesign. No UXP Developer Tool is needed for this fallback. If the
+Desktop copy is missing, open
+`%LOCALAPPDATA%\Programs\InDesignAaronV1.1\com.ads.indesign-bridge_ID.ccx`
+manually.
 
-   Leave that window open. Open InDesign → **Window → Plugins → InDesign Copilot**.
-   The panel connects to the bridge on its own within a few seconds; its header
-   then says **Connected**.
-5. In the panel click **Model**, pick OpenAI-compatible or Anthropic, enter the
-   model id and API key, then **Save**. The key is held in memory for the active
-   chat session, is sent only to the base URL you enter, and is not persisted.
-6. Ask for a change, for example *"Move the headline down 8 mm and keep it
-   inside the margins."* The panel inspects the layout first, then edits it and
-   shows the result.
+A signed installer can still trigger Windows SmartScreen until the publisher
+has established enough reputation. Continue only if you trust the release
+source. This is separate from the Adobe plugin trust prompt and from model
+credentials.
 
-Check the installation at any time:
-
-```powershell
-.\InDesignAaronV1.1.exe --doctor
-.\InDesignAaronV1.1.exe --print-config
-```
-
-To prove the whole chain works with InDesign open, run the live self test. It
-waits for the plugin to connect (60 seconds by default), then inspects the open
-document and renders one page in the system image viewer:
-
-```powershell
-.\InDesignAaronV1.1.exe --selftest
-.\InDesignAaronV1.1.exe --selftest --timeout 120
-```
-
-It exits with code 0 and prints the inspection id and the preview PNG paths when
-both steps succeed, and with code 1 with a `SELFTEST_TIMEOUT` / `SELFTEST_FAILED`
-reason when they do not.
+The build and source-contract tests do not establish public Authenticode trust,
+UPIA installation on a clean target profile, or live InDesign panel operation;
+those remain target-environment validation steps and are not claimed here.
 
 ## Use from an MCP client
 
-`--print-config` prints the exact block. For Claude Desktop
-(`%APPDATA%\Claude\claude_desktop_config.json`) or Cursor:
+The installer normally configures Claude Desktop, Cursor, and Qoder. Restart
+the client after setup. If automatic configuration reports a problem, merge only
+the `mcpServers.indesign` entry from:
 
-```json
-{
-  "mcpServers": {
-    "indesign": {
-      "command": "C:\\path\\to\\InDesignAaronV1.1.exe"
-    }
-  }
-}
+```text
+%LOCALAPPDATA%\Programs\InDesignAaronV1.1\mcp-config.json
+```
+
+into the client's existing MCP config. The usual files are:
+
+```text
+Claude Desktop: %APPDATA%\Claude\claude_desktop_config.json
+Cursor:         %USERPROFILE%\.cursor\mcp.json
+Qoder:          %USERPROFILE%\.qoder\mcp.json
+```
+
+Do not replace a client's whole config file, and restart the client after
+editing it. For a manual executable setup, `--print-config` prints the exact
+block to merge:
+
+```powershell
+.\InDesignAaronV1.1.exe --print-config
 ```
 
 The client starts the executable without a terminal, so it runs in MCP mode and
 also starts the bridge in-process. Only one process may own ports 3000/3001; if
 you already ran `--bridge`, the server reuses it.
-
-When started with no arguments from a terminal, the executable prints help and
-runs as a bridge.
 
 ## MCP surface
 
@@ -192,27 +202,123 @@ Enter the same token in the panel's **Model** section. Without it the bridge is
 open to any local process, which is fine on a single-user machine but not on a
 shared one.
 
-## Build from source
+## Manual / developer setup
 
-Requires Node.js 20+ to run from source and Node.js 24+ to build the executable,
-plus the dependencies in `package.json`.
+Use this flow when developing the plugin or running the portable executable
+without the installer. It is not required for normal end-user setup.
+
+1. Build or obtain `InDesignAaronV1.1.exe` and put it in a writable folder.
+2. Stage the UXP plugin sources:
+
+   ```powershell
+   .\InDesignAaronV1.1.exe --install-plugin
+   ```
+
+   This writes `plugin\manifest.json`, `plugin\index.html`, and `plugin\index.js`
+   next to the executable.
+3. Open Adobe UXP Developer Tool → **Add Plugin** → choose that `manifest.json`
+   → **Load**.
+4. Start the bridge:
+
+   ```powershell
+   .\InDesignAaronV1.1.exe --bridge
+   ```
+
+   Leave that window open, then open InDesign **Window → Plugins → InDesign
+   Copilot**. The panel reconnects automatically when the bridge is available.
+5. Enter the model ID and API key in the panel's **Model** section. API keys are
+   not persisted.
+6. Merge the output of `.\InDesignAaronV1.1.exe --print-config` into the MCP
+   client's existing config, preserving its other servers and settings.
+
+When started with no arguments from a terminal, the executable prints help and
+runs as a bridge. An MCP client starts it without a terminal, which selects MCP
+stdio mode and starts the bridge in-process.
+
+Check the installation at any time:
 
 ```powershell
-npm install
-npm test                # 200+ automated tests, no InDesign required
-npm run build           # embeds assets, bundles, builds ..\InDesignAaronV1.1.exe
-npm run smoke           # MCP stdio handshake against the bundle
+.\InDesignAaronV1.1.exe --doctor
+.\InDesignAaronV1.1.exe --print-config
 ```
 
-`npm start` runs the source server; `npm run bridge` runs the bridge alone.
-The bundle is `build/indesign-aaron.cjs`; the executable is produced with
-Node's SEA (`--build-sea`) from that bundle, so no external packer is needed.
+For an explicit live check with InDesign open, run the self test. It waits for
+the plugin to connect (60 seconds by default), inspects the open document, and
+renders one page in the system image viewer:
+
+```powershell
+.\InDesignAaronV1.1.exe --selftest
+.\InDesignAaronV1.1.exe --selftest --timeout 120
+```
+
+It exits with code 0 and prints the inspection ID and preview PNG paths when
+both steps succeed, or code 1 with a `SELFTEST_TIMEOUT` / `SELFTEST_FAILED`
+reason when they do not. This command requires a live plugin connection; the
+automated suite and MCP smoke test do not perform live InDesign validation.
+
+## Build from source / maintainer builds
+
+Node.js 20+ is sufficient for source development, tests, and bundle-only work.
+SEA executable, installer, and release builds require Node.js 24+ on Windows
+x64. Installer builds also require Inno Setup 7 (or `INNO_SETUP_ISCC` pointing
+to `ISCC.exe`). UXP packaging uses the pinned Adobe UXP CLI 1.2.0 dev dependency.
+Signed releases additionally require SignTool and certificate or Azure Artifact
+Signing credentials; see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Use the script-free clean install because Adobe UXP CLI 1.2.0 has lifecycle
+hooks that fail for consumers, then run the committed Adobe helper setup:
+
+```powershell
+npm ci --ignore-scripts
+npm run prepackage:uxp
+```
+
+Run the maintainer checks and builds:
+
+```powershell
+npm test
+npm run build
+npm run smoke
+npm run package:uxp
+npm run build:installer
+npm run build:release
+```
+
+- `npm run build` embeds the skill/plugin assets, bundles
+  `build/indesign-aaron.cjs`, and builds `..\InDesignAaronV1.1.exe` with Node's
+  Single Executable Application support.
+- `npm run smoke` checks the built bundle's MCP stdio handshake. To check a
+  different executable or bundle, use `npm run smoke -- <path>`.
+- `npm run package:uxp` runs the Adobe helper prep step again and creates
+  `dist/uxp/com.ads.indesign-bridge_ID.ccx`. It prefers the official CLI and
+  uses Adobe's pinned offline package command only after an affirmative UXP
+  Developer Service connection/unavailability diagnostic.
+- `npm run build:installer` performs the SEA build, signs nothing, smoke-tests
+  the SEA, packages the `.ccx`, compiles in temporary staging, and publishes
+  `dist/installer/InDesignAaronV1.1-<version>-windows-setup-unsigned.exe` plus
+  `mcp-config.json`.
+- `npm run build:release` preflights signing inputs, signs and verifies the SEA
+  and staged setup, and only then publishes
+  `dist/installer/InDesignAaronV1.1-<version>-windows-setup-signed.exe`.
+  It fails closed if signing or verification fails.
+
+`npm start` runs the source server; `npm run bridge` runs the bridge alone;
+`npm run dev` starts the source server with the Node inspector. The bundle is
+`build/indesign-aaron.cjs`, so no external executable packer is needed.
+
+Generated binaries and packages are intentionally excluded from Git. In-repo
+`.exe`/`.ccx` files, `build/`, `dist/installer/`, portable installer configs,
+and signing material are ignored; the SEA is written to
+`..\InDesignAaronV1.1.exe`, outside the repository. Do not commit these outputs.
+Regenerated embedded JavaScript under `src/assets/` is tracked source: review
+and commit it when changing `skills/` or `plugin/`.
 
 ### Layout
 
 ```
 src/core/            MCP server, tool dispatch, UXP executor
 src/handlers/        ~136 low-level InDesign handlers
+src/install/         MCP config merging, InDesign discovery, UPIA install/remove
 src/skills/          catalog, plan schema, inspector, journal, backup, runtime, protocol
 src/quality/         structural checks, page renderer, visual review, verifier
 src/chat/            Copilot model adapters and tool loop
@@ -220,16 +326,39 @@ src/assets/          generated embedded skills and plugin files
 bridge/server.js     HTTP + WebSocket relay (importable and standalone)
 plugin/              Adobe UXP panel (chat, approval card, settings)
 skills/              portable skill catalog (*.md + manifest.json)
-scripts/             embed-assets, build-exe, smoke-mcp
+scripts/             embed/build/package/smoke/sign pipelines
+installer/           Inno Setup source and installed START-HERE guide
 tests/               node --test suites
 ```
 
 ## Troubleshooting
 
-- **Panel says "Bridge off"** — start `InDesignAaronV1.1.exe --bridge`; the
-  panel reconnects every 3 seconds.
-- **"Plugin not connected"** — load the plugin in the UXP Developer Tool and
-  open Window → Plugins → InDesign Copilot.
+- **Windows SmartScreen warns about the signed setup** — a valid signature does
+  not immediately establish publisher reputation. Verify that the download came
+  from a trusted release before continuing; do not use an unknown unsigned copy.
+- **`Install InDesign Copilot*.ccx` appeared on the Desktop** — automatic UPIA
+  registration did not complete, so the plugin is not installed yet. Double-click
+  that `.ccx`, accept the Adobe trust prompt, wait for Creative Cloud, and restart
+  InDesign. The installer chooses a numbered name rather than overwriting an
+  existing file. If the Desktop copy is missing, open
+  `%LOCALAPPDATA%\Programs\InDesignAaronV1.1\com.ads.indesign-bridge_ID.ccx`.
+- **Panel says "Bridge off"** — for an installed copy, use the Start Menu
+  shortcut **InDesign Copilot**; setup also creates a Startup shortcut. For a
+  manual copy, run `InDesignAaronV1.1.exe --bridge`. The panel reconnects every
+  3 seconds.
+- **"Plugin not connected"** — complete any Desktop `.ccx` fallback first, then
+  open **Window → Plugins → InDesign Copilot**. Use UXP Developer Tool only for
+  the manual/developer flow. Run **Check Installation** in the Start Menu, or
+  `InDesignAaronV1.1.exe --doctor`, to inspect InDesign discovery and whether the
+  bridge reports a connected plugin.
+- **Setup cannot find InDesign** — install InDesign 2023 (18.0) or newer, launch
+  it once, and rerun setup. Detection uses registered App Paths and common Adobe
+  install folders before copying application files.
+- **MCP client does not show the server** — restart the client. If automatic
+  configuration reported a problem, merge only `mcpServers.indesign` from
+  `%LOCALAPPDATA%\Programs\InDesignAaronV1.1\mcp-config.json` into the existing
+  client config; do not replace the whole file. `--print-config` provides the
+  same block for a manual executable.
 - **No document** — most tools need an open document; `create_document` is
   available if you want a new one.
 - **High-risk plan needs a saved document** — save the `.indd` first so the
@@ -238,6 +367,11 @@ tests/               node --test suites
   consistently so both sides use the same configuration.
 - **Visual review unavailable** — the configured model cannot accept images;
   the result is reported as structural-only.
+- **Uninstall leaves the plugin listed** — use the **Uninstall InDesignAaronV1.1**
+  Start Menu shortcut. If Creative Cloud still lists InDesign Copilot, open
+  **Plugins → Manage Plugins** there and remove it. Uninstall removes only MCP
+  entries owned by this installation and only unchanged Desktop fallback files
+  recorded by setup.
 
 ## License
 
