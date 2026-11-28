@@ -3,7 +3,7 @@ InDesignAaronV1.1 - Start Here
 
 Open InDesign Copilot
 ---------------------
-1. Open Adobe InDesign 2022 (18.0) or newer.
+1. Open Adobe InDesign 2023 (18.0) or newer.
 2. The InDesignAaron bridge starts at Windows sign-in. If it is not running,
    open the Start Menu shortcut named "InDesign Copilot".
 3. In InDesign, choose Window → Plugins → InDesign Copilot.
@@ -13,8 +13,11 @@ Enter a model and API key
 Open the Model section in the panel, enter the model ID for your provider and
 its API key, then send a message. API keys are not saved by the panel or the
 installer; they are held in memory only.
-Only non-secret settings, such as the model and optional bridge token, can be
-saved by the panel. The installer never asks for or stores an API key.
+Settings such as the model and optional bridge token can be saved by the panel.
+The optional bridge token is a bearer credential, not a non-secret setting:
+anyone who obtains it may authenticate to the local bridge. Protect it like a
+password. API keys are not saved by the panel or installer; they are held in
+memory only. The installer never asks for or stores an API key.
 
 MCP clients and mcp-config.json
 ------------------------------
@@ -39,11 +42,12 @@ settings. The generated config contains no API keys.
 
 Desktop .ccx fallback
 ---------------------
-If "Install InDesign Copilot.ccx" appears on your Desktop, automatic plugin
-registration through Adobe UPIA did not complete. The plugin is NOT yet
-installed. Double-click that .ccx file, accept the Adobe trust prompt, and wait
-for Creative Cloud to finish. Then restart InDesign and open
-Window > Plugins > InDesign Copilot again.
+If an "Install InDesign Copilot*.ccx" file appears on your Desktop, automatic
+plugin registration through Adobe UPIA did not complete. Setup uses a numbered
+filename when the original name already exists, so it never replaces an
+unrelated Desktop file. The plugin is NOT yet installed. Double-click that .ccx
+file, accept the Adobe trust prompt, and wait for Creative Cloud to finish. Then
+restart InDesign and open Window > Plugins > InDesign Copilot again.
 
 If the Desktop copy is missing, open this file manually instead:
 

@@ -15,7 +15,7 @@
     "smoke": "node scripts/smoke-mcp.mjs",
     "prepackage:uxp": "node node_modules/@adobe/uxp-devtools-helper/scripts/devtools_setup.js",
     "package:uxp": "node scripts/package-uxp.mjs",
-    "test": "node --test tests/test-chat-agent.js tests/test-export-images.js tests/test-skill-registry.js tests/test-units.js tests/test-plan-schema.js tests/test-target-bound-handlers.js tests/test-inspector.js tests/test-structural-checks.js tests/test-inspection-handlers.js tests/test-skill-runtime.js tests/test-mcp-skills.js tests/test-page-renderer.js tests/test-visual-review.js tests/test-verifier.js tests/test-backup.js tests/test-bridge-auth.js tests/test-selftest.js tests/test-mcp-config.js tests/test-uxp-installer.js tests/test-install-cli.js tests/test-package-uxp.mjs",
+    "test": "node --test tests/test-chat-agent.js tests/test-export-images.js tests/test-skill-registry.js tests/test-units.js tests/test-plan-schema.js tests/test-target-bound-handlers.js tests/test-inspector.js tests/test-structural-checks.js tests/test-inspection-handlers.js tests/test-skill-runtime.js tests/test-mcp-skills.js tests/test-page-renderer.js tests/test-visual-review.js tests/test-verifier.js tests/test-backup.js tests/test-bridge-auth.js tests/test-selftest.js tests/test-mcp-config.js tests/test-uxp-installer.js tests/test-install-cli.js tests/test-indesign-discovery.js tests/test-installer-source.js tests/test-package-uxp.mjs",
     "test:handlers": "node tests/test-all-handlers.js",
     "test:live": "node tests/unified-test-runner.js"
   },

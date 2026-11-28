@@ -2,6 +2,8 @@
 #define MyAppExeName "InDesignAaronV1.1.exe"
 #define MyAppGroupName "InDesignAaronV1.1"
 #define InstalledCcxName "com.ads.indesign-bridge_ID.ccx"
+#define InstalledInDesignPathFile "indesign-path.txt"
+#define OwnedDesktopFallbacks "owned-desktop-fallbacks.txt"
 
 ; The release build supplies these values with ISCC /D switches. Defaults keep
 ; the source convenient to inspect without embedding build-machine artifacts.
@@ -78,6 +80,8 @@ var
   RemoveUxpResult: Integer;
   RemoveClientsResult: Integer;
   PluginNeedsFallback: Boolean;
+  DesktopFallbackPath: String;
+  InDesignPathWriteResult: Integer;
 
 function RunApp(Parameters: string): Integer;
 var
@@ -186,6 +190,8 @@ begin
   RemoveUxpResult := -1;
   RemoveClientsResult := -1;
   PluginNeedsFallback := False;
+  DesktopFallbackPath := '';
+  InDesignPathWriteResult := -1;
 
   if not IsWin64 then
   begin
@@ -197,7 +203,7 @@ begin
   InDesignExe := DetectInDesign;
   if InDesignExe = '' then
   begin
-    MsgBox('Adobe InDesign 18.0 (2022) or newer was not found.' + #13#10#13#10 +
+    MsgBox('Adobe InDesign 18.0 (2023) or newer was not found.' + #13#10#13#10 +
       'Install or update InDesign first. If it is already installed, launch it once ' +
       'so Creative Cloud finishes registration, then run this setup again.' + #13#10#13#10 +
       'No application files have been copied.', mbError, MB_OK);
@@ -273,16 +279,122 @@ begin
   Log('Generate per-user mcp-config.json => ' + IntToStr(Result));
 end;
 
+procedure SaveDetectedInDesignPath;
+var
+  ConfigLines: TArrayOfString;
+begin
+  // The packaged --doctor command prefers this exact path, including installs
+  // on drives and folders that source/default discovery does not scan.
+  SetLength(ConfigLines, 2);
+  ConfigLines[0] := InDesignExe;
+  ConfigLines[1] := '';
+  if SaveStringsToUTF8FileWithoutBOM(
+    ExpandConstant('{app}\{#InstalledInDesignPathFile}'), ConfigLines, False) then
+    InDesignPathWriteResult := 0
+  else
+    InDesignPathWriteResult := 1;
+  Log('Save detected InDesign path => ' + IntToStr(InDesignPathWriteResult));
+end;
+
+function FileSHA256(const FileName: String; var Hash: String): Boolean;
+begin
+  Result := False;
+  Hash := '';
+  if not FileExists(FileName) then
+    exit;
+  try
+    Hash := GetSHA256OfFile(FileName);
+    Result := Hash <> '';
+  except
+    Hash := '';
+  end;
+end;
+
+function RecordOwnedDesktopFallback(const DesktopPath: String): Boolean;
+var
+  Hash: String;
+  OwnershipLines: TArrayOfString;
+begin
+  Result := False;
+  if not FileSHA256(DesktopPath, Hash) then
+    exit;
+  SetLength(OwnershipLines, 2);
+  OwnershipLines[0] := DesktopPath;
+  OwnershipLines[1] := Hash;
+  Result := SaveStringsToUTF8FileWithoutBOM(
+    ExpandConstant('{app}\{#OwnedDesktopFallbacks}'), OwnershipLines, True);
+end;
+
+function IsOwnedDesktopFallbackPath(const OwnedPath: String): Boolean;
+var
+  DesktopPrefix: String;
+  FileName: String;
+begin
+  DesktopPrefix := AddBackslash(ExpandConstant('{userdesktop}'));
+  FileName := ExtractFileName(OwnedPath);
+  Result := (OwnedPath <> '') and
+    (CompareText(ExtractFilePath(OwnedPath), DesktopPrefix) = 0) and
+    (CompareText(Copy(FileName, 1, Length('Install InDesign Copilot')),
+      'Install InDesign Copilot') = 0) and
+    (CompareText(ExtractFileExt(FileName), '.ccx') = 0);
+end;
+
+procedure RemoveOwnedDesktopFallbacks;
+var
+  OwnershipLines: TArrayOfString;
+  Index: Integer;
+  ManifestPath: String;
+  OwnedPath: String;
+  ExpectedHash: String;
+  ActualHash: String;
+begin
+  ManifestPath := ExpandConstant('{app}\{#OwnedDesktopFallbacks}');
+  if not FileExists(ManifestPath) then
+    exit;
+  if not LoadStringsFromFile(ManifestPath, OwnershipLines) then
+  begin
+    Log('Could not read owned Desktop fallback records; preserving Desktop files');
+    exit;
+  end;
+
+  Index := 0;
+  while Index <= Length(OwnershipLines) - 2 do
+  begin
+    OwnedPath := OwnershipLines[Index];
+    ExpectedHash := OwnershipLines[Index + 1];
+    if not IsOwnedDesktopFallbackPath(OwnedPath) then
+      Log('Ignoring invalid owned Desktop fallback path: ' + OwnedPath)
+    else if not FileExists(OwnedPath) then
+      Log('Owned Desktop fallback is already absent: ' + OwnedPath)
+    else if FileSHA256(OwnedPath, ActualHash) and
+      (CompareText(ExpectedHash, ActualHash) = 0) then
+    begin
+      if DeleteFile(OwnedPath) then
+        Log('Removed owned Desktop fallback: ' + OwnedPath)
+      else
+        Log('Could not remove owned Desktop fallback: ' + OwnedPath);
+    end
+    else
+      Log('Preserving modified or unverifiable Desktop file: ' + OwnedPath);
+    Index := Index + 2;
+  end;
+  if not DeleteFile(ManifestPath) then
+    Log('Could not remove owned Desktop fallback records');
+end;
+
 procedure InstallComponents;
 var
   CcxFile: String;
   DesktopCcx: String;
+  FallbackIndex: Integer;
 begin
+  SaveDetectedInDesignPath;
   ServerResult := RunApp('--install-plugin');
 
   CcxFile := ExpandConstant('{app}\{#InstalledCcxName}');
   PluginResult := RunApp('--install-uxp "' + CcxFile + '"');
   PluginNeedsFallback := False;
+  DesktopFallbackPath := '';
   if PluginResult = 3 then
   begin
     PluginNeedsFallback := True;
@@ -297,8 +409,27 @@ begin
   if PluginNeedsFallback then
   begin
     DesktopCcx := ExpandConstant('{userdesktop}\Install InDesign Copilot.ccx');
+    FallbackIndex := 2;
+    while FileExists(DesktopCcx) do
+    begin
+      DesktopCcx := ExpandConstant('{userdesktop}\Install InDesign Copilot-' +
+        IntToStr(FallbackIndex) + '.ccx');
+      FallbackIndex := FallbackIndex + 1;
+    end;
     if CopyFile(CcxFile, DesktopCcx, False) then
-      Log('Copied plugin fallback to ' + DesktopCcx)
+    begin
+      if RecordOwnedDesktopFallback(DesktopCcx) then
+      begin
+        DesktopFallbackPath := DesktopCcx;
+        Log('Copied and recorded owned plugin fallback to ' + DesktopCcx);
+      end
+      else
+      begin
+        DeleteFile(DesktopCcx);
+        PluginResult := 1;
+        Log('Could not record plugin fallback ownership; removed the new copy');
+      end;
+    end
     else
     begin
       PluginResult := 1;
@@ -337,10 +468,12 @@ begin
 
   if PluginResult = 0 then
     Report := Report + #13#10 + 'Plugin: Installed through Adobe UPIA.'
+  else if DesktopFallbackPath <> '' then
+    Report := Report + #13#10 + 'Plugin: Needs one click. Double-click ' + DesktopFallbackPath +
+      ' and accept the Adobe trust prompt.'
   else
-    Report := Report + #13#10 + 'Plugin: Needs one click. Double-click Install InDesign Copilot.ccx ' +
-      'on your Desktop and accept the Adobe trust prompt. If that file is missing, open ' +
-      ExpandConstant('{app}\{#InstalledCcxName}') + ' manually.';
+    Report := Report + #13#10 + 'Plugin: Needs one click. Open ' +
+      ExpandConstant('{app}\{#InstalledCcxName}') + ' manually and accept the Adobe trust prompt.';
 
   if ConfigWriteResult <> 0 then
     Report := Report + #13#10 + 'MCP configuration: Client command exit ' + IntToStr(McpResult) +
@@ -364,6 +497,10 @@ begin
   if WizardIsTaskSelected('launchcopilot') and (InDesignResult <> 0) then
     Report := Report + #13#10 + 'InDesign launch failed; setup will continue. Launch InDesign manually.';
 
+  if InDesignPathWriteResult <> 0 then
+    Report := Report + #13#10 + 'InDesign path: Could not save the detected executable path; ' +
+      'Check Installation will use default discovery instead.';
+
   MsgBox(Report + #13#10#13#10 + 'See START-HERE.txt in the installation folder for next steps.',
     mbInformation, MB_OK);
 end;
@@ -376,6 +513,7 @@ end;
 
 procedure RemoveComponents;
 begin
+  RemoveOwnedDesktopFallbacks;
   RemoveUxpResult := RunApp('--remove-uxp "' +
     ExpandConstant('{app}\{#InstalledCcxName}') + '"');
   if RemoveUxpResult <> 0 then

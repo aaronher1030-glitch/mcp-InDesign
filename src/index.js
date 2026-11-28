@@ -9,7 +9,7 @@
  * and any MCP client talk to the single executable.
  */
 import net from 'node:net';
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { startBridge } from '../bridge/server.js';
 import { InDesignMCPServer } from './core/InDesignMCPServer.js';
@@ -21,6 +21,7 @@ import {
 import { embeddedPluginFiles } from './assets/embeddedPlugin.js';
 import { APP_NAME, APP_VERSION, BRIDGE_HTTP_PORT, BRIDGE_WS_PORT } from './version.js';
 import { configureClients, defaultClientTargets } from './install/mcpConfig.js';
+import { detectInDesign } from './install/inDesignDiscovery.js';
 import { findUpia, installCcx, removeCcx, uxpExitCode } from './install/uxpInstaller.js';
 
 const args = process.argv.slice(2);
@@ -46,29 +47,6 @@ function isBridgeRunning(port = BRIDGE_WS_PORT) {
     socket.on('error', () => resolve(false));
     socket.on('timeout', () => { socket.destroy(); resolve(false); });
   });
-}
-
-function detectInDesign() {
-  const roots = [
-    'C:\\Program Files\\Adobe',
-    'C:\\Program Files (x86)\\Adobe',
-    '/Applications',
-  ].filter((root) => existsSync(root));
-  const found = [];
-  for (const root of roots) {
-    let entries = [];
-    try {
-      entries = readdirSync(root, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !/Adobe InDesign/i.test(entry.name)) continue;
-      const version = (entry.name.match(/(\d{4})/) || [])[1] ?? null;
-      found.push({ name: entry.name, version: Number(version) || null, path: join(root, entry.name) });
-    }
-  }
-  return found.sort((left, right) => (right.version ?? 0) - (left.version ?? 0));
 }
 
 function installPlugin() {
@@ -110,7 +88,9 @@ function printConfig() {
 async function printDoctor() {
   console.log(`${APP_NAME} ${APP_VERSION}`);
   console.log(`Runtime: ${process.version}${isPackaged() ? ' (packaged)' : ''}`);
-  const installations = detectInDesign();
+  const installations = detectInDesign({
+    executablePath: isPackaged() ? process.execPath : null,
+  });
   if (installations.length === 0) {
     console.log('InDesign: not found in the default Adobe install folders.');
   } else {
