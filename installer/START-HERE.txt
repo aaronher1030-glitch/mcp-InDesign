@@ -1,0 +1,66 @@
+InDesignAaronV1.1 - Start Here
+==============================
+
+Open InDesign Copilot
+---------------------
+1. Open Adobe InDesign 2022 (18.0) or newer.
+2. The InDesignAaron bridge starts at Windows sign-in. If it is not running,
+   open the Start Menu shortcut named "InDesign Copilot".
+3. In InDesign, choose Window → Plugins → InDesign Copilot.
+
+Enter a model and API key
+-------------------------
+Open the Model section in the panel, enter the model ID for your provider and
+its API key, then send a message. API keys are not saved by the panel or the
+installer; they are held in memory only.
+Only non-secret settings, such as the model and optional bridge token, can be
+saved by the panel. The installer never asks for or stores an API key.
+
+MCP clients and mcp-config.json
+------------------------------
+Restart Claude Desktop, Cursor, and Qoder after setup so they reload their MCP
+configuration. Setup configures detected clients without replacing unrelated
+MCP servers or top-level settings; timestamped backups are kept when a file is
+changed.
+
+If automatic configuration reports a problem, use this generated file:
+
+  %LOCALAPPDATA%\Programs\InDesignAaronV1.1\mcp-config.json
+
+Copy only its mcpServers.indesign entry into the client's existing MCP config,
+then restart that client. The usual client files are:
+
+  Claude Desktop: %APPDATA%\Claude\claude_desktop_config.json
+  Cursor:         %USERPROFILE%\.cursor\mcp.json
+  Qoder:          %USERPROFILE%\.qoder\mcp.json
+
+Do not replace a client's whole config file. Keep its other MCP servers and
+settings. The generated config contains no API keys.
+
+Desktop .ccx fallback
+---------------------
+If "Install InDesign Copilot.ccx" appears on your Desktop, automatic plugin
+registration through Adobe UPIA did not complete. The plugin is NOT yet
+installed. Double-click that .ccx file, accept the Adobe trust prompt, and wait
+for Creative Cloud to finish. Then restart InDesign and open
+Window > Plugins > InDesign Copilot again.
+
+If the Desktop copy is missing, open this file manually instead:
+
+  %LOCALAPPDATA%\Programs\InDesignAaronV1.1\com.ads.indesign-bridge_ID.ccx
+
+You do not need the UXP Developer Tool for this fallback.
+
+Windows and Adobe prompts
+-------------------------
+Windows SmartScreen may warn because a local, unsigned setup was downloaded.
+Continue only if you trust the source of the file. Adobe may also show a plugin
+trust prompt when the .ccx is opened. These prompts are separate from model
+credentials.
+
+Checks and removal
+------------------
+Use the Start Menu shortcut "Check Installation" to inspect the server, bridge,
+and InDesign detection. To remove InDesignAaronV1.1, use its Uninstall shortcut
+in the Start Menu. If Creative Cloud still lists InDesign Copilot afterward,
+open Plugins > Manage Plugins in Creative Cloud and remove it there.

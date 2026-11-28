@@ -105,6 +105,10 @@ build/
 *.ccx
 dist/
 
+# Inno Setup and generated portable client config output
+dist/installer/
+installer/mcp-config.json
+
 # Development artifacts
 *.tmp
 *.temp
