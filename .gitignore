@@ -101,6 +101,10 @@ temp_script.jsx
 # Generated bundle and SEA intermediates
 build/
 
+# Generated Adobe UXP packages
+*.ccx
+dist/
+
 # Development artifacts
 *.tmp
 *.temp
