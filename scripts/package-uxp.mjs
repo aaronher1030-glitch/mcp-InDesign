@@ -1,12 +1,45 @@
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { basename, dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const adobeCliEntry = '@adobe/uxp-devtools-cli/src/uxp.js';
 const adobePackageCommand = '@adobe/uxp-devtools-core/src/core/client/plugin/actions/PluginPackageCommand.js';
 const adobeLogger = '@adobe/uxp-devtools-core/src/core/common/Logger.js';
+
+function environmentValue(env, name) {
+  const key = Object.keys(env).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+  return key === undefined ? undefined : env[key];
+}
+
+function findWindowsCliOnPath(processImpl, exists) {
+  const pathValue = environmentValue(processImpl.env, 'Path');
+  if (!pathValue) {
+    throw new Error('Cannot find the UXP CLI on Windows PATH');
+  }
+
+  const configuredExtensions = environmentValue(processImpl.env, 'PATHEXT');
+  const extensions = (configuredExtensions ?? '.COM;.EXE;.BAT;.CMD')
+    .split(';')
+    .map((extension) => extension.trim())
+    .filter(Boolean)
+    .map((extension) => (extension.startsWith('.') ? extension : `.${extension}`));
+  extensions.push('');
+
+  for (const pathDirectory of pathValue.split(';')) {
+    const trimmed = pathDirectory.trim();
+    if (!trimmed) continue;
+    const directory = trimmed.startsWith('"') && trimmed.endsWith('"')
+      ? trimmed.slice(1, -1)
+      : trimmed;
+    for (const extension of extensions) {
+      const candidate = win32.join(directory, extension ? `uxp${extension.toLowerCase()}` : 'uxp');
+      if (exists(candidate)) return candidate;
+    }
+  }
+
+  throw new Error('Cannot find the UXP CLI on Windows PATH');
+}
 
 function resolveCliPath(root, processImpl, exists) {
   const override = processImpl.env.UXP_CLI_PATH;
@@ -28,41 +61,62 @@ function resolveCliPath(root, processImpl, exists) {
     return localCli;
   }
 
-  return 'uxp';
+  return processImpl.platform === 'win32'
+    ? findWindowsCliOnPath(processImpl, exists)
+    : 'uxp';
 }
 
-function resolveAdobeCliEntry(root) {
-  const require = createRequire(join(root, 'package.json'));
+function unsupportedShim(shimPath, reason) {
+  return new Error(`Unsupported Windows UXP CLI shim: ${shimPath}. ${reason}`);
+}
+
+function resolveWindowsShimEntry(shimPath, exists) {
+  let source;
   try {
-    return require.resolve(adobeCliEntry);
+    source = readFileSync(shimPath, 'utf8');
   } catch (error) {
-    throw new Error(
-      `Cannot resolve Adobe's pinned UXP CLI entry point (${adobeCliEntry}): ${error.message}`,
-      { cause: error },
-    );
+    throw new Error(`Cannot read Windows UXP CLI shim: ${shimPath}`, { cause: error });
   }
+
+  // npm and Yarn generate this final Node invocation. Parse only that narrow
+  // shape; never execute or interpolate the shim as a shell command.
+  const invocation = source.match(
+    /^[ \t]*endLocal\b[^\r\n]*&[ \t]*"%_prog%"[ \t]+"((?:%dp0%|%~dp0%)[\\/][^"\r\n]+\.js)"[ \t]+%\*[ \t]*\r?$/im,
+  );
+  if (!invocation) {
+    throw unsupportedShim(shimPath, 'expected an npm/Yarn Node entry-point invocation');
+  }
+
+  const target = invocation[1];
+  const relativeTarget = target.match(/^(?:%dp0%|%~dp0%)[\\/](.+)$/i);
+  if (!relativeTarget || relativeTarget[1].includes('%')) {
+    throw unsupportedShim(shimPath, 'the JavaScript entry must be relative to the shim directory');
+  }
+
+  const entry = win32.resolve(win32.dirname(shimPath), relativeTarget[1]);
+  if (!exists(entry)) {
+    throw new Error(`Windows UXP CLI shim target does not exist: ${entry}`);
+  }
+  return entry;
 }
 
-function resolveCliInvocation(root, cliPath, processImpl) {
+function resolveCliInvocation(cliPath, processImpl, exists) {
   if (processImpl.platform !== 'win32') {
     return { command: cliPath, args: [], cliPath };
   }
 
-  const isWindowsShim = /\.(?:cmd|bat)$/i.test(cliPath);
-  const isPathLookup = basename(cliPath).toLowerCase() === 'uxp';
-  const isJavaScriptEntry = /\.js$/i.test(cliPath);
-  if (!isWindowsShim && !isPathLookup && !isJavaScriptEntry) {
-    throw new Error(
-      `Unsupported Windows UXP CLI path: ${cliPath}. Use Adobe's src/uxp.js or the pinned npm CLI.`,
-    );
+  if (/\.js$/i.test(cliPath)) {
+    const entry = resolve(cliPath);
+    return { command: processImpl.execPath, args: [entry], cliPath: entry };
+  }
+  if (/\.cmd$/i.test(cliPath)) {
+    const entry = resolveWindowsShimEntry(cliPath, exists);
+    return { command: processImpl.execPath, args: [entry], cliPath: entry };
   }
 
-  const entry = isJavaScriptEntry ? resolve(cliPath) : resolveAdobeCliEntry(root);
-  return {
-    command: processImpl.execPath,
-    args: [entry],
-    cliPath: entry,
-  };
+  throw new Error(
+    `Unsupported Windows UXP CLI path: ${cliPath}. Use a JavaScript entry point or an npm/Yarn .cmd shim.`,
+  );
 }
 
 function ccxSnapshot(outputDir) {
@@ -98,12 +152,38 @@ function errorOutput(error) {
   return [error?.stdout, error?.stderr, error?.message].map(outputText).filter(Boolean).join('\n');
 }
 
-function isServiceFailure(text) {
-  return /connect(?:ion)?\s+(?:to\s+)?the\s+UXP Developer Service/i.test(text);
+function requireCliSuccess(result) {
+  if (typeof result === 'string' || Buffer.isBuffer(result) || result == null) return;
+  if (result.error) throw result.error;
+  if (result.signal) {
+    throw Object.assign(new Error(`Adobe UXP CLI terminated by signal ${result.signal}`), {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      signal: result.signal,
+    });
+  }
+  if (result.status !== undefined && result.status !== 0) {
+    throw Object.assign(new Error(`Adobe UXP CLI exited with status ${result.status}`), {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      status: result.status,
+      signal: result.signal,
+    });
+  }
+  if (result.status === null) {
+    throw Object.assign(new Error('Adobe UXP CLI did not report an exit status'), {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      status: result.status,
+      signal: result.signal,
+    });
+  }
 }
 
-function isWindowsShimFailure(error, processImpl) {
-  return processImpl.platform === 'win32' && error?.code === 'EINVAL';
+function isServiceFailure(text) {
+  const connectionFailure = /(?:could\s+not|cound\s+not|can(?:not|\s+not)|can't|failed\s+to|unable\s+to|was\s+not\s+able\s+to)\s+(?:connect\s+to|establish\s+(?:a\s+)?connection\s+(?:to|with))\s+(?:the\s+)?UXP Developer Service/i;
+  const serviceUnavailable = /(?:the\s+)?UXP Developer Service\s+(?:is\s+)?(?:unavailable|offline|not\s+(?:available|running))/i;
+  return connectionFailure.test(text) || serviceUnavailable.test(text);
 }
 
 function requireOfflineResults(results) {
@@ -150,7 +230,7 @@ export async function packageUxp({
   root,
   outputDir,
   cliPath,
-  execFile = execFileSync,
+  execFile = spawnSync,
   exists = existsSync,
   processImpl = process,
   packageOffline = packageWithAdobeOffline,
@@ -158,7 +238,7 @@ export async function packageUxp({
   const resolvedRoot = resolve(root);
   const resolvedOutputDir = resolve(resolvedRoot, outputDir);
   const resolvedCliPath = cliPath ?? resolveCliPath(resolvedRoot, processImpl, exists);
-  const invocation = resolveCliInvocation(resolvedRoot, resolvedCliPath, processImpl);
+  const invocation = resolveCliInvocation(resolvedCliPath, processImpl, exists);
   const args = [
     ...invocation.args,
     'plugin',
@@ -185,26 +265,32 @@ export async function packageUxp({
   };
 
   let useOfflinePackager = false;
+  let result;
+  let executionError;
   try {
-    const result = execFile(invocation.command, args, {
+    result = execFile(invocation.command, args, {
       cwd: resolvedRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
-    const stdout = outputText(result);
-    if (stdout) processImpl.stdout.write(stdout);
-    useOfflinePackager = isServiceFailure(stdout);
   } catch (error) {
-    const stdout = outputText(error?.stdout);
-    const stderr = outputText(error?.stderr);
-    if (stdout) processImpl.stdout.write(stdout);
-    if (stderr) processImpl.stderr.write(stderr);
-    const diagnostic = errorOutput(error);
-    if (!isServiceFailure(diagnostic) && !isWindowsShimFailure(error, processImpl)) {
-      throw error;
-    }
-    useOfflinePackager = true;
+    executionError = error;
+  }
+
+  const resultIsOutput = typeof result === 'string' || Buffer.isBuffer(result);
+  const stdout = outputText(executionError?.stdout ?? (resultIsOutput ? result : result?.stdout));
+  const stderr = outputText(executionError?.stderr ?? (resultIsOutput ? undefined : result?.stderr));
+  if (stdout) processImpl.stdout.write(stdout);
+  if (stderr) processImpl.stderr.write(stderr);
+  const diagnostic = executionError
+    ? errorOutput(executionError)
+    : [stdout, stderr, outputText(result?.error?.message)].filter(Boolean).join('\n');
+  useOfflinePackager = isServiceFailure(diagnostic);
+
+  if (!useOfflinePackager) {
+    if (executionError) throw executionError;
+    requireCliSuccess(result);
   }
 
   if (useOfflinePackager) {
