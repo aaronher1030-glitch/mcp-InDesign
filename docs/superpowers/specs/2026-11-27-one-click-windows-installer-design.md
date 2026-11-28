@@ -53,8 +53,11 @@ uxp plugin package --manifest <plugin directory> --apps ID --outputPath <staging
 ```
 
 The script locates the CLI from `UXP_CLI_PATH`, `PATH`, or the pinned local
-development dependency. It fails if no `.ccx` is produced. Manual ZIP assembly
-is not a supported fallback. UDT's **Package** action remains the documented
+development dependency. It fails if no `.ccx` is produced. When the official
+CLI cannot connect to the UXP Developer Service, the pinned Adobe
+`PluginPackageCommand.execute` implementation may run offline; this still uses
+Adobe's manifest validation and archive implementation. Manual ZIP assembly is
+not a supported fallback. UDT's **Package** action remains the documented
 manual alternative for maintainers.
 
 The plugin ID stays `com.ads.indesign-bridge` across updates. The ordinary

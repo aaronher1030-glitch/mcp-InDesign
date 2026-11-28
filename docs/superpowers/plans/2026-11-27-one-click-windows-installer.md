@@ -504,7 +504,11 @@ execFile(cliPath, ['plugin', 'package', '--manifest', join(root, 'plugin'), '--a
 ```
 
 After success, find exactly one newly produced `.ccx`; if zero or multiple
-ambiguous files exist, throw an actionable error. Do not create a ZIP manually.
+ambiguous files exist, throw an actionable error. If the official CLI cannot
+connect to the UXP Developer Service, invoke the pinned Adobe
+`PluginPackageCommand.execute` implementation offline with strict service
+validation stubbed and local package validation intact. Do not create a ZIP
+manually.
 
 Add npm script:
 
